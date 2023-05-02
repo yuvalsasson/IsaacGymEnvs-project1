@@ -47,6 +47,9 @@ from .allegro_hand import AllegroHand
 from .dextreme.allegro_hand_dextreme import AllegroHandDextremeManualDR, AllegroHandDextremeADR
 from .trifinger import Trifinger
 
+# our project imports
+from .robot_push_object import RobotPushObject
+
 
 # Mappings from strings to environments
 isaacgym_task_map = {
@@ -71,4 +74,7 @@ isaacgym_task_map = {
     "Quadcopter": Quadcopter,
     "ShadowHand": ShadowHand,
     "Trifinger": Trifinger,
+
+    # Our tasks
+    "RobotPushObject": RobotPushObject,
 }
