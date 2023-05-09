@@ -147,7 +147,8 @@ class RobotPushObject(VecTask):
 
         # Franka defaults
         self.franka_default_dof_pos = to_torch(
-            [0, 0.1963, 0, -2.6180, 0, 2.9416, 0.7854, 0.035, 0.035], device=self.device
+            # [0, 0.1963, 0, -2.6180, 0, 2.9416, 0.7854, 0.035, 0.035], device=self.device
+            [0, 0.1963, 0, -2.6180, 0, 2.9416, 0.7854, 0.0, 0.0], device=self.device
         )
 
         # OSC Gains
@@ -231,6 +232,7 @@ class RobotPushObject(VecTask):
 
         # Create cubeB asset
         cubeB_opts = gymapi.AssetOptions()
+        cubeB_opts.disable_gravity = True
         cubeB_asset = self.gym.create_box(self.sim, *([self.cubeB_size] * 3), cubeB_opts)
         cubeB_color = gymapi.Vec3(0.0, 0.4, 0.1)
 
@@ -585,10 +587,14 @@ class RobotPushObject(VecTask):
             # Make sure we succeeded at sampling
             assert success, "Sampling cube locations was unsuccessful! ):"
         else:
-            # We just directly sample
-            sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + \
-                                              2.0 * self.start_position_noise * (
-                                                      torch.rand(num_resets, 2, device=self.device) - 0.5)
+            # TODO: (yuval) just call `set position` for b instead of hackish way inside the random position function
+            if cube.lower() == "b":
+                sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + torch.ones(num_resets, 2, device=self.device) * (self.states["cubeB_size"][0] + 1.2 + 0.2) * 0.5
+            else:
+                # We just directly sample
+                sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + \
+                                                  2.0 * self.start_position_noise * (
+                                                          torch.rand(num_resets, 2, device=self.device) - 0.5)
 
         # Sample rotation value
         if self.start_rotation_noise > 0:
@@ -637,6 +643,10 @@ class RobotPushObject(VecTask):
         # print(self.cmd_limit, self.action_scale)
 
         # Control arm (scale value first)
+        # TODO: yuval fix into not hackish way
+        u_arm[:, 2:] = 0
+        u_arm[:, 2:] = 0
+        u_gripper[:] = -1
         u_arm = u_arm * self.cmd_limit / self.action_scale
         if self.control_type == "osc":
             u_arm = self._compute_osc_torques(dpose=u_arm)
@@ -706,43 +716,12 @@ def compute_franka_reward(
     cubeA_size = states["cubeA_size"]
     cubeB_size = states["cubeB_size"]
 
-    # distance from hand to the cubeA
-    d = torch.norm(states["cubeA_pos_relative"], dim=-1)
-    d_lf = torch.norm(states["cubeA_pos"] - states["eef_lf_pos"], dim=-1)
-    d_rf = torch.norm(states["cubeA_pos"] - states["eef_rf_pos"], dim=-1)
-    dist_reward = 1 - torch.tanh(10.0 * (d + d_lf + d_rf) / 3)
-
-    # reward for lifting cubeA
-    cubeA_height = states["cubeA_pos"][:, 2] - reward_settings["table_height"]
-    cubeA_lifted = (cubeA_height - cubeA_size) > 0.04
-    lift_reward = cubeA_lifted
-
-    # how closely aligned cubeA is to cubeB (only provided if cubeA is lifted)
-    offset = torch.zeros_like(states["cubeA_to_cubeB_pos"])
-    offset[:, 2] = (cubeA_size + cubeB_size) / 2
-    d_ab = torch.norm(states["cubeA_to_cubeB_pos"] + offset, dim=-1)
-    align_reward = (1 - torch.tanh(10.0 * d_ab)) * cubeA_lifted
-
-    # Dist reward is maximum of dist and align reward
-    dist_reward = torch.max(dist_reward, align_reward)
-
-    # final reward for stacking successfully (only if cubeA is close to target height and corresponding location, and gripper is not grasping)
-    cubeA_align_cubeB = (torch.norm(states["cubeA_to_cubeB_pos"][:, :2], dim=-1) < 0.02)
-    cubeA_on_cubeB = torch.abs(cubeA_height - target_height) < 0.02
-    gripper_away_from_cubeA = (d > 0.04)
-    stack_reward = cubeA_align_cubeB & cubeA_on_cubeB & gripper_away_from_cubeA
-
-    # Compose rewards
-
-    # We either provide the stack reward or the align + dist reward
-    rewards = torch.where(
-        stack_reward,
-        reward_settings["r_stack_scale"] * stack_reward,
-        reward_settings["r_dist_scale"] * dist_reward + reward_settings["r_lift_scale"] * lift_reward + reward_settings[
-            "r_align_scale"] * align_reward,
-    )
+    # distance from center of the table
+    d_cube = torch.norm(states["cubeA_pos"], dim=-1)
+    dist_reward = 1 - torch.tanh(10.0 * d_cube)
+    reached_goal = dist_reward == 1
 
     # Compute resets
-    reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (stack_reward > 0), torch.ones_like(reset_buf), reset_buf)
+    reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (reached_goal > 0), torch.ones_like(reset_buf), reset_buf)
 
-    return rewards, reset_buf
+    return dist_reward, reset_buf
