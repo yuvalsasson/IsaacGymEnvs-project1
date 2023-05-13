@@ -645,7 +645,6 @@ class RobotPushObject(VecTask):
         # Control arm (scale value first)
         # TODO: yuval fix into not hackish way
         u_arm[:, 2:] = 0
-        u_arm[:, 2:] = 0
         u_gripper[:] = -1
         u_arm = u_arm * self.cmd_limit / self.action_scale
         if self.control_type == "osc":
@@ -712,9 +711,6 @@ def compute_franka_reward(
     # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
 
     # Compute per-env physical parameters
-    target_height = states["cubeB_size"] + states["cubeA_size"] / 2.0
-    cubeA_size = states["cubeA_size"]
-    cubeB_size = states["cubeB_size"]
 
     # distance from center of the table
     d_cube = torch.norm(states["cubeA_pos"], dim=-1)

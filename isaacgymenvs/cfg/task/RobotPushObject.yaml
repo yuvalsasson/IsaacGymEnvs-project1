@@ -17,7 +17,7 @@ env:
   startRotationNoise: 0.0 # cube random rotation
   frankaPositionNoise: 0.0
   frankaRotationNoise: 0.0
-  frankaDofNoise: 0.0 0.0 # cube joint position random pose
+  frankaDofNoise: 0.0 # cube joint position random pose
 
   aggregateMode: 3
 
