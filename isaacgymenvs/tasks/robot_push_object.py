@@ -29,6 +29,7 @@
 import numpy as np
 import os
 import torch
+import torch.nn.functional
 
 from isaacgym import gymtorch
 from isaacgym import gymapi
@@ -105,7 +106,9 @@ class RobotPushObject(VecTask):
         # obs include: cubeA_pose (7) + cubeB_pos (3) + eef_pose (7) + q_gripper (2)
         self.cfg["env"]["numObservations"] = 19 if self.control_type == "osc" else 26
         # actions include: delta EEF if OSC (6) or joint torques (7) + bool gripper (1)
-        self.cfg["env"]["numActions"] = 7 if self.control_type == "osc" else 8
+        # Allow only movement in x-y place - therefore 2
+        assert self.control_type == "osc"
+        self.cfg["env"]["numActions"] = 2
 
         # Values to be filled in at runtime
         self.states = {}                        # will be dict filled with relevant states to use for reward calculation
@@ -339,7 +342,7 @@ class RobotPushObject(VecTask):
 
             # Create cubes
             self._cubeA_id = self.gym.create_actor(env_ptr, cubeA_asset, cubeA_start_pose, "cubeA", i, 2, 0)
-            self._cubeB_id = self.gym.create_actor(env_ptr, cubeB_asset, cubeB_start_pose, "cubeB", i, 4, 0)
+            self._cubeB_id = self.gym.create_actor(env_ptr, cubeB_asset, cubeB_start_pose, "cubeB", -i, 4, 0)
             # Set colors
             self.gym.set_rigid_body_color(env_ptr, self._cubeA_id, 0, gymapi.MESH_VISUAL, cubeA_color)
             self.gym.set_rigid_body_color(env_ptr, self._cubeB_id, 0, gymapi.MESH_VISUAL, cubeB_color)
@@ -466,7 +469,7 @@ class RobotPushObject(VecTask):
         # Reset cubes, sampling cube B first, then A
         # if not self._i:
         self._reset_init_cube_state(cube='B', env_ids=env_ids, check_valid=False)
-        self._reset_init_cube_state(cube='A', env_ids=env_ids, check_valid=True)
+        self._reset_init_cube_state(cube='A', env_ids=env_ids, check_valid=False)
         # self._i = True
 
         # Write these new init states to the sim states
@@ -589,7 +592,7 @@ class RobotPushObject(VecTask):
         else:
             # TODO: (yuval) just call `set position` for b instead of hackish way inside the random position function
             if cube.lower() == "b":
-                sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + torch.ones(num_resets, 2, device=self.device) * (self.states["cubeB_size"][0] + 1.2 + 0.2) * 0.5
+                sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0)
             else:
                 # We just directly sample
                 sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + \
@@ -634,18 +637,14 @@ class RobotPushObject(VecTask):
         return u
 
     def pre_physics_step(self, actions):
+        # actions is num_envs x 2 shape
         self.actions = actions.clone().to(self.device)
 
-        # Split arm and gripper command
-        u_arm, u_gripper = self.actions[:, :-1], self.actions[:, -1]
+        # u_arm expect num_envs x 6 matrix with forces
+        u_arm = self.actions[:, :]
+        u_arm = torch.nn.functional.pad(u_arm, (0,4), "constant", 0)
+        u_gripper = torch.ones(self.num_envs, device=self.device) * -1 # close gripper
 
-        # print(u_arm, u_gripper)
-        # print(self.cmd_limit, self.action_scale)
-
-        # Control arm (scale value first)
-        # TODO: yuval fix into not hackish way
-        u_arm[:, 2:] = 0
-        u_gripper[:] = -1
         u_arm = u_arm * self.cmd_limit / self.action_scale
         if self.control_type == "osc":
             u_arm = self._compute_osc_torques(dpose=u_arm)
@@ -704,7 +703,7 @@ class RobotPushObject(VecTask):
 #####################################################################
 
 
-@torch.jit.script
+# @torch.jit.script
 def compute_franka_reward(
     reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
 ):
@@ -714,10 +713,17 @@ def compute_franka_reward(
 
     # distance from center of the table
     d_cube = torch.norm(states["cubeA_pos"], dim=-1)
-    dist_reward = 1 - torch.tanh(10.0 * d_cube)
-    reached_goal = dist_reward == 1
+    cube_goal_reward = 1 - torch.tanh(d_cube)
+
+    # distance from hand to the cubeA
+    d_cube_end_effector = torch.norm(states["cubeA_pos_relative"], dim=-1)
+    reward_cube_end_effector = 1 - torch.tanh(d_cube_end_effector)
+
+    reached_goal = d_cube < 0.05
+
+    total_reward = cube_goal_reward * 0.1 + reward_cube_end_effector * 1.5
 
     # Compute resets
     reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (reached_goal > 0), torch.ones_like(reset_buf), reset_buf)
 
-    return dist_reward, reset_buf
+    return total_reward, reset_buf
