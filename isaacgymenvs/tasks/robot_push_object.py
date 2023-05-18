@@ -727,3 +727,5 @@ def compute_franka_reward(
     reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (reached_goal > 0), torch.ones_like(reset_buf), reset_buf)
 
     return total_reward, reset_buf
+
+
