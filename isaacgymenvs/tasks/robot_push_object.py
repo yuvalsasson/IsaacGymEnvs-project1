@@ -149,10 +149,15 @@ class RobotPushObject(VecTask):
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device, graphics_device_id=graphics_device_id, headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
         # Franka defaults
+        # 7 (joint positions (rad)) and 2 finger pos
         self.franka_default_dof_pos = to_torch(
             # [0, 0.1963, 0, -2.6180, 0, 2.9416, 0.7854, 0.035, 0.035], device=self.device
-            [0, 0.1963, 0, -2.6180, 0, 2.9416, 0.7854, 0.0, 0.0], device=self.device
-        )
+            # [0, 0.1963, 0, -2.6180, 0, 2.9416, 0.7854, 0.0, 0.0], device=self.device
+            # [-2.8295e-02, 5.1699e-01, 3.9387e-02, -2.4893e+00, 2.6071e-01, 2.9835e+00, 4.9361e-01, 0, 0], device=self.device
+            # [-4.8420e-02, 7.2104e-01, 6.8597e-02, -2.3945e+00, 3.1913e-01, 3.0938e+00, 4.3030e-01, 0, 0], device=self.device
+            # [-3.8625e-02, 5.3070e-01, 4.6779e-02, -2.5030e+00, 1.6559e-01, 3.0788e+00, 6.0065e-01, 0, 0], device=self.device
+            [8.5004e-03, 5.6514e-01, -7.9857e-03, -2.0813e+00, 9.0008e-03, 2.6464e+00, 7.7926e-01, 2.4078e-09, 6.9505e-10], device=self.device
+        ) # = eef_pos tensor([0.1230, 0.0016, 1.0792], device='cuda:0')
 
         # OSC Gains
         self.kp = to_torch([150.] * 6, device=self.device)
@@ -219,7 +224,7 @@ class RobotPushObject(VecTask):
         table_asset = self.gym.create_box(self.sim, *[1.2, 1.2, table_thickness], table_opts)
 
         # Create table stand asset
-        table_stand_height = 0.1
+        table_stand_height = 0.001
         table_stand_pos = [-0.5, 0.0, 1.0 + table_thickness / 2 + table_stand_height / 2]
         table_stand_opts = gymapi.AssetOptions()
         table_stand_opts.fix_base_link = True
@@ -230,6 +235,7 @@ class RobotPushObject(VecTask):
 
         # Create cubeA asset
         cubeA_opts = gymapi.AssetOptions()
+        cubeA_opts.density = 0.01
         cubeA_asset = self.gym.create_box(self.sim, *([self.cubeA_size] * 3), cubeA_opts)
         cubeA_color = gymapi.Vec3(0.6, 0.1, 0.0)
 
