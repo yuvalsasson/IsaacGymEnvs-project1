@@ -226,6 +226,7 @@ class FrankaCubeStack(VecTask):
 
         # Create cubeA asset
         cubeA_opts = gymapi.AssetOptions()
+        cubeA_opts.density = 0.01
         cubeA_asset = self.gym.create_box(self.sim, *([self.cubeA_size] * 3), cubeA_opts)
         cubeA_color = gymapi.Vec3(0.6, 0.1, 0.0)
 
