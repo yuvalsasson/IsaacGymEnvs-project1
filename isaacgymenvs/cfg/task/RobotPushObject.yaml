@@ -8,12 +8,12 @@ env:
   numEnvs: ${resolve_default:8192,${...num_envs}}
   envSpacing: 1.5
   episodeLength: 300
-  enableDebugVis: True
+  enableDebugVis: False
 
   clipObservations: 5.0
   clipActions: 1.0
 
-  startPositionNoise: 0.25 # cube random position
+  startPositionNoise: 0.0 # cube random position
   startRotationNoise: 0.0 # cube random rotation
   frankaPositionNoise: 0.0
   frankaRotationNoise: 0.0

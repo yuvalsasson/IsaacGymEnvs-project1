@@ -30,14 +30,18 @@ import numpy as np
 import os
 import torch
 import torch.nn.functional
-
+import wandb
 from isaacgym import gymtorch
 from isaacgym import gymapi
 from isaacgym.torch_utils import *
 
 from isaacgymenvs.utils.torch_jit_utils import *
 from isaacgymenvs.tasks.base.vec_task import VecTask
+from isaacgymenvs.utils.torch_jit_utils import *
 
+def normalized_2d_distance(dst, src):
+    d = dst[:, :2] - src[:, :2]
+    return torch.norm(d, dim=-1)
 
 @torch.jit.script
 def axisangle2quat(vec, eps=1e-6):
@@ -121,6 +125,8 @@ class RobotPushObject(VecTask):
         self._cubeB_state = None                # Current state of cubeB for the current env
         self._cubeA_id = None                   # Actor ID corresponding to cubeA for a given env
         self._cubeB_id = None                   # Actor ID corresponding to cubeB for a given env
+
+        self.target_pos = None
 
         # Tensor placeholders
         self._root_state = None             # State of root body        (n_envs, 13)
@@ -230,7 +236,7 @@ class RobotPushObject(VecTask):
         table_stand_opts.fix_base_link = True
         table_stand_asset = self.gym.create_box(self.sim, *[0.2, 0.2, table_stand_height], table_opts)
 
-        self.cubeA_size = 0.050
+        self.cubeA_size = 0.070
         self.cubeB_size = 0.070
 
         # Create cubeA asset
@@ -430,18 +436,22 @@ class RobotPushObject(VecTask):
             # Franka
             "q": self._q[:, :],
             "q_gripper": self._q[:, -2:],
-            "eef_pos": self._eef_state[:, :3],
+            "eef_pos": self._eef_state[:, :3].clone().to(self.device),
             "eef_quat": self._eef_state[:, 3:7],
             "eef_vel": self._eef_state[:, 7:],
             "eef_lf_pos": self._eef_lf_state[:, :3],
             "eef_rf_pos": self._eef_rf_state[:, :3],
+
             # Cubes
             "cubeA_quat": self._cubeA_state[:, 3:7],
-            "cubeA_pos": self._cubeA_state[:, :3],
+            "cubeA_pos": self._cubeA_state[:, :3].clone().to(self.device),
             "cubeA_pos_relative": self._cubeA_state[:, :3] - self._eef_state[:, :3],
-            "cubeB_quat": self._cubeB_state[:, 3:7],
-            "cubeB_pos": self._cubeB_state[:, :3],
-            "cubeA_to_cubeB_pos": self._cubeB_state[:, :3] - self._cubeA_state[:, :3],
+
+            "eef_last_pos": self.states["eef_pos"].clone().to(self.device) if "eef_pos" in self.states else None,
+            "cubeA_last_pos": self.states["cubeA_pos"].clone().to(self.device) if "cubeA_pos" in self.states else None,
+            "cubeA_init_pos": self._init_cubeA_state,
+            # Goal
+            "target_pos": self.target_pos,
         })
 
     def _refresh(self):
@@ -455,22 +465,26 @@ class RobotPushObject(VecTask):
         self._update_states()
 
     def compute_reward(self, actions):
-        self.rew_buf[:], self.reset_buf[:] = compute_franka_reward(
+        self.rew_buf[:], self.reset_buf[:] = compute_cube_dist_reward(
             self.reset_buf, self.progress_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
         )
 
     def compute_observations(self):
         self._refresh()
-        obs = ["cubeA_quat", "cubeA_pos", "cubeA_to_cubeB_pos", "eef_pos", "eef_quat"]
+        obs = ["cubeA_quat", "cubeA_pos", "target_pos", "eef_pos", "eef_quat"]
         obs += ["q_gripper"] if self.control_type == "osc" else ["q"]
         self.obs_buf = torch.cat([self.states[ob] for ob in obs], dim=-1)
-
-        maxs = {ob: torch.max(self.states[ob]).item() for ob in obs}
 
         return self.obs_buf
 
     def reset_idx(self, env_ids):
         env_ids_int32 = env_ids.to(dtype=torch.int32)
+
+        # Random target goal
+        self.target_pos = torch.zeros(len(env_ids), 3, device=self.device)
+        self.target_pos[:, :2] = torch.tensor(self._table_surface_pos[:2], device=self.device, dtype=torch.float32)
+        self.target_pos[:, :2] += torch.tensor([0.40, 0.0], device=self.device, dtype=torch.float32)
+        self.target_pos[:, 2] = self._table_surface_pos[2] + self.states["cubeA_size"].squeeze(-1)[env_ids] / 2
 
         # Reset cubes, sampling cube B first, then A
         # if not self._i:
@@ -598,12 +612,13 @@ class RobotPushObject(VecTask):
         else:
             # TODO: (yuval) just call `set position` for b instead of hackish way inside the random position function
             if cube.lower() == "b":
-                sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0)
+                sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + torch.ones_like(sampled_cube_state[:, :2])
             else:
                 # We just directly sample
                 sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + \
                                                   2.0 * self.start_position_noise * (
                                                           torch.rand(num_resets, 2, device=self.device) - 0.5)
+                sampled_cube_state[:, :2] = self.target_pos[:, :2] / 2
 
         # Sample rotation value
         if self.start_rotation_noise > 0:
@@ -642,12 +657,20 @@ class RobotPushObject(VecTask):
 
         return u
 
+    def override_movement(self, target_pos):
+        v = (self._cubeA_state[:, :2] - self._eef_state[:, :2])
+        v = torch.nn.functional.normalize(v, dim=-1) / 5
+        v[normalized_2d_distance(self._cubeA_state[:,:2], self.target_pos[:, :2]) < 0.03] = torch.zeros_like(v[0])
+        return v
+
     def pre_physics_step(self, actions):
         # actions is num_envs x 2 shape
         self.actions = actions.clone().to(self.device)
 
         # u_arm expect num_envs x 6 matrix with forces
         u_arm = self.actions[:, :]
+        if False:
+            u_arm = self.override_movement(self._cubeA_state[:, :3])
         u_arm = torch.nn.functional.pad(u_arm, (0,4), "constant", 0)
         u_gripper = torch.ones(self.num_envs, device=self.device) * -1 # close gripper
 
@@ -689,12 +712,10 @@ class RobotPushObject(VecTask):
             eef_rot = self.states["eef_quat"]
             cubeA_pos = self.states["cubeA_pos"]
             cubeA_rot = self.states["cubeA_quat"]
-            cubeB_pos = self.states["cubeB_pos"]
-            cubeB_rot = self.states["cubeB_quat"]
 
             # Plot visualizations
             for i in range(self.num_envs):
-                for pos, rot in zip((eef_pos, cubeA_pos, cubeB_pos), (eef_rot, cubeA_rot, cubeB_rot)):
+                for pos, rot in zip((eef_pos, cubeA_pos), (eef_rot, cubeA_rot)):
                     px = (pos[i] + quat_apply(rot[i], to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
                     py = (pos[i] + quat_apply(rot[i], to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
                     pz = (pos[i] + quat_apply(rot[i], to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
@@ -709,29 +730,55 @@ class RobotPushObject(VecTask):
 #####################################################################
 
 
+# # @torch.jit.script
+# def compute_franka_reward(
+#     reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
+# ):
+#     # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+#
+#     # Compute per-env physical parameters
+#
+#     # distance from center of the table
+#     d_cube = torch.norm(states["cubeA_pos"], dim=-1)
+#     cube_goal_reward = 1 - torch.tanh(d_cube)
+#
+#     # distance from hand to the cubeA
+#     d_cube_end_effector = torch.norm(states["cubeA_pos_relative"], dim=-1)
+#     reward_cube_end_effector = 1 - torch.tanh(d_cube_end_effector)
+#
+#     reached_goal = d_cube < 0.05
+#
+#     total_reward = cube_goal_reward * 0.1 + reward_cube_end_effector * 1.5
+#
+#     # Compute resets
+#     reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (reached_goal > 0), torch.ones_like(reset_buf), reset_buf)
+#
+#     return total_reward, reset_buf
+
 # @torch.jit.script
 def compute_franka_reward(
     reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
 ):
-    # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+    d = torch.norm(states["cubeA_pos_relative"], dim=-1)
+    d_lf = torch.norm(states["cubeA_pos"] - states["eef_lf_pos"], dim=-1)
+    d_rf = torch.norm(states["cubeA_pos"] - states["eef_rf_pos"], dim=-1)
+    dist_penalty_cond = ((d + d_lf + d_rf) / 3) > states["cubeA_size"]
 
-    # Compute per-env physical parameters
-
-    # distance from center of the table
     d_cube = torch.norm(states["cubeA_pos"], dim=-1)
-    cube_goal_reward = 1 - torch.tanh(d_cube)
-
-    # distance from hand to the cubeA
-    d_cube_end_effector = torch.norm(states["cubeA_pos_relative"], dim=-1)
-    reward_cube_end_effector = 1 - torch.tanh(d_cube_end_effector)
-
+    r_g_dist = - d_cube / torch.norm(states["cubeA_init_pos"])
     reached_goal = d_cube < 0.05
-
-    total_reward = cube_goal_reward * 0.1 + reward_cube_end_effector * 1.5
-
-    # Compute resets
-    reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (reached_goal > 0), torch.ones_like(reset_buf), reset_buf)
-
+    r_dist = torch.where(reached_goal > 0, 50.0, r_g_dist.double())
+    r_touch = torch.where(dist_penalty_cond, 0.0, (-torch.tanh(((d + d_lf + d_rf) / 3))).double())
+    reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (reached_goal > 0), torch.ones_like(reset_buf),reset_buf)
+    total_reward = r_dist + r_touch
     return total_reward, reset_buf
 
+@torch.jit.script
+def compute_cube_dist_reward(
+    reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
+):
+    # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
 
+    d = normalized_2d_distance(states["cubeA_pos"], states["target_pos"])
+    reset_buf = progress_buf >= max_episode_length - 1
+    return 1 - torch.tanh(d), reset_buf
