@@ -39,10 +39,14 @@ from isaacgymenvs.utils.torch_jit_utils import *
 from isaacgymenvs.tasks.base.vec_task import VecTask
 from isaacgymenvs.utils.torch_jit_utils import *
 
-def normalized_2d_distance(dst, src, original_location):
+def normalized_2d_distance(dst, src, original_location, normalize):
     d = dst[:, :2] - src[:, :2]
-    d_factor = original_location[:, :2] - src[:, :2]
-    return torch.norm(d, dim=-1) / (torch.norm(d_factor, dim=-1) + 1e-6)
+    if normalize:
+        d_factor = original_location[:, :2] - src[:, :2]
+        return torch.norm(d, dim=-1) / (torch.norm(d_factor, dim=-1) + 1e-6)
+    else:
+        return torch.norm(d, dim=-1)
+
 
 @torch.jit.script
 def axisangle2quat(vec, eps=1e-6):
@@ -788,6 +792,6 @@ def compute_cube_dist_reward(
 ):
     # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
 
-    d = normalized_2d_distance(states["cubeA_pos"], states["target_pos"], states["cubeA_init_pos"])
+    d = normalized_2d_distance(states["cubeA_pos"], states["target_pos"], states["cubeA_init_pos"], torch.tensor(False))
     reset_buf = progress_buf >= max_episode_length - 1
     return 1 - torch.tanh(d), reset_buf
