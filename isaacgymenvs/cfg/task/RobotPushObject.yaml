@@ -13,7 +13,7 @@ env:
   clipObservations: 5.0
   clipActions: 1.0
 
-  startPositionNoise: 0.0 # cube random position
+  startPositionNoise: 0.05 # cube random position
   startRotationNoise: 0.0 # cube random rotation
   frankaPositionNoise: 0.0
   frankaRotationNoise: 0.0

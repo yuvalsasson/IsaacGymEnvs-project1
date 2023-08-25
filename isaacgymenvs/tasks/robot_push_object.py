@@ -39,9 +39,10 @@ from isaacgymenvs.utils.torch_jit_utils import *
 from isaacgymenvs.tasks.base.vec_task import VecTask
 from isaacgymenvs.utils.torch_jit_utils import *
 
-def normalized_2d_distance(dst, src):
+def normalized_2d_distance(dst, src, original_location):
     d = dst[:, :2] - src[:, :2]
-    return torch.norm(d, dim=-1)
+    d_factor = original_location[:, :2] - src[:, :2]
+    return torch.norm(d, dim=-1) / (torch.norm(d_factor, dim=-1) + 1e-6)
 
 @torch.jit.script
 def axisangle2quat(vec, eps=1e-6):
@@ -164,7 +165,7 @@ class RobotPushObject(VecTask):
             # [-3.8625e-02, 5.3070e-01, 4.6779e-02, -2.5030e+00, 1.6559e-01, 3.0788e+00, 6.0065e-01, 0, 0], device=self.device
             [8.5004e-03, 5.6514e-01, -7.9857e-03, -2.0813e+00, 9.0008e-03, 2.6464e+00, 7.7926e-01, 2.4078e-09, 6.9505e-10], device=self.device
         ) # = eef_pos tensor([0.1230, 0.0016, 1.0792], device='cuda:0')
-
+        self.franka_default_xy = to_torch([0.132, 0], device=self.device)
         # OSC Gains
         self.kp = to_torch([150.] * 6, device=self.device)
         self.kd = 2 * torch.sqrt(self.kp)
@@ -486,16 +487,6 @@ class RobotPushObject(VecTask):
         self.target_pos[:, :2] += torch.tensor([0.40, 0.0], device=self.device, dtype=torch.float32)
         self.target_pos[:, 2] = self._table_surface_pos[2] + self.states["cubeA_size"].squeeze(-1)[env_ids] / 2
 
-        # Reset cubes, sampling cube B first, then A
-        # if not self._i:
-        self._reset_init_cube_state(cube='B', env_ids=env_ids, check_valid=False)
-        self._reset_init_cube_state(cube='A', env_ids=env_ids, check_valid=False)
-        # self._i = True
-
-        # Write these new init states to the sim states
-        self._cubeA_state[env_ids] = self._init_cubeA_state[env_ids]
-        self._cubeB_state[env_ids] = self._init_cubeB_state[env_ids]
-
         # Reset agent
         reset_noise = torch.rand((len(env_ids), 9), device=self.device)
         pos = tensor_clamp(
@@ -529,6 +520,16 @@ class RobotPushObject(VecTask):
                                               gymtorch.unwrap_tensor(self._dof_state),
                                               gymtorch.unwrap_tensor(multi_env_ids_int32),
                                               len(multi_env_ids_int32))
+
+        # Reset cubes, sampling cube B first, then A
+        # if not self._i:
+        self._reset_init_cube_state(cube='B', env_ids=env_ids, check_valid=False)
+        self._reset_init_cube_state(cube='A', env_ids=env_ids, check_valid=False)
+        # self._i = True
+
+        # Write these new init states to the sim states
+        self._cubeA_state[env_ids] = self._init_cubeA_state[env_ids]
+        self._cubeB_state[env_ids] = self._init_cubeB_state[env_ids]
 
         # Update cube states
         multi_env_ids_cubes_int32 = self._global_indices[env_ids, -2:].flatten()
@@ -615,10 +616,18 @@ class RobotPushObject(VecTask):
                 sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + torch.ones_like(sampled_cube_state[:, :2])
             else:
                 # We just directly sample
-                sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + \
-                                                  2.0 * self.start_position_noise * (
-                                                          torch.rand(num_resets, 2, device=self.device) - 0.5)
-                sampled_cube_state[:, :2] = self.target_pos[:, :2] / 2
+                # random position
+                # sampled_cube_state[:, :2] = centered_cube_xy_state.unsqueeze(0) + \
+                #                                   2.0 * self.start_position_noise * (
+                #                                           torch.rand(num_resets, 2, device=self.device) - 0.5)
+
+                # static position near the target position
+                # sampled_cube_state[:, :2] = self.target_pos[:, :2] / 2
+                xy = torch.zeros(num_resets, 2, device=self.device)
+                xy[:, :2] = self.franka_default_xy
+                noise = 0.05 + self.start_position_noise * torch.rand(num_resets, 2, device=self.device)
+                noise = noise * ((torch.randint_like(noise, low=0, high=2) * 2) - 1)
+                sampled_cube_state[:, :2] = xy + noise
 
         # Sample rotation value
         if self.start_rotation_noise > 0:
@@ -779,6 +788,6 @@ def compute_cube_dist_reward(
 ):
     # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
 
-    d = normalized_2d_distance(states["cubeA_pos"], states["target_pos"])
+    d = normalized_2d_distance(states["cubeA_pos"], states["target_pos"], states["cubeA_init_pos"])
     reset_buf = progress_buf >= max_episode_length - 1
     return 1 - torch.tanh(d), reset_buf
