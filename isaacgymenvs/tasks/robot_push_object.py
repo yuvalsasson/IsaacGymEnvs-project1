@@ -113,7 +113,7 @@ class RobotPushObject(VecTask):
 
         # dimensions
         # obs include: cubeA_pose (7) + cubeB_pos (3) + eef_pose (7) + q_gripper (2)
-        self.cfg["env"]["numObservations"] = 19 if self.control_type == "osc" else 26
+        self.cfg["env"]["numObservations"] = 22 if self.control_type == "osc" else 26
         # actions include: delta EEF if OSC (6) or joint torques (7) + bool gripper (1)
         # Allow only movement in x-y place - therefore 2
         assert self.control_type == "osc"
@@ -441,22 +441,30 @@ class RobotPushObject(VecTask):
             # Franka
             "q": self._q[:, :],
             "q_gripper": self._q[:, -2:],
-            "eef_pos": self._eef_state[:, :3].clone().to(self.device),
+            "eef_pos": self._eef_state[:, :3],
+            "eef_pos_2d": self._eef_state[:, :2],
             "eef_quat": self._eef_state[:, 3:7],
             "eef_vel": self._eef_state[:, 7:],
+            "eef_vel_2d": self._eef_state[:, 7:9],
             "eef_lf_pos": self._eef_lf_state[:, :3],
             "eef_rf_pos": self._eef_rf_state[:, :3],
 
             # Cubes
             "cubeA_quat": self._cubeA_state[:, 3:7],
-            "cubeA_pos": self._cubeA_state[:, :3].clone().to(self.device),
-            "cubeA_pos_relative": self._cubeA_state[:, :3] - self._eef_state[:, :3],
+            "cubeA_pos": self._cubeA_state[:, :3],
+            "cubeA_pos_2d": self._cubeA_state[:, :2],
 
+            # Last positions
             "eef_last_pos": self.states["eef_pos"].clone().to(self.device) if "eef_pos" in self.states else None,
             "cubeA_last_pos": self.states["cubeA_pos"].clone().to(self.device) if "cubeA_pos" in self.states else None,
             "cubeA_init_pos": self._init_cubeA_state,
+
             # Goal
-            "target_pos": self.target_pos,
+            "target_pos_2d": self.target_pos[:, :2],
+
+            # Relatives
+            "cubeA_pos_eef_relative_2d": self._cubeA_state[:, :2] - self._eef_state[:, :2],
+            "cubeA_pos_goal_relative_2d": self._cubeA_state[:, :2] - self.target_pos[:, :2],
         })
 
     def _refresh(self):
@@ -476,7 +484,7 @@ class RobotPushObject(VecTask):
 
     def compute_observations(self):
         self._refresh()
-        obs = ["cubeA_quat", "cubeA_pos", "target_pos", "eef_pos", "eef_quat"]
+        obs = ["cubeA_quat", "cubeA_pos_2d", "target_pos_2d", "eef_pos_2d", "eef_quat", "cubeA_pos_eef_relative_2d", "cubeA_pos_goal_relative_2d", "eef_vel_2d"]
         obs += ["q_gripper"] if self.control_type == "osc" else ["q"]
         self.obs_buf = torch.cat([self.states[ob] for ob in obs], dim=-1)
 
@@ -627,13 +635,18 @@ class RobotPushObject(VecTask):
 
                 # static position near the target position
                 # sampled_cube_state[:, :2] = self.target_pos[:, :2] / 2
-                xy = torch.zeros(num_resets, 2, device=self.device)
-                xy[:, :2] = self.franka_default_xy
-                noise = 0.05 + self.start_position_noise * torch.rand(num_resets, 2, device=self.device)
-                noise = noise * ((torch.randint_like(noise, low=0, high=2) * 2) - 1)
-                sampled_cube_state[:, :2] = xy + noise
+                if self.start_position_noise != 0.0:
+                    xy = torch.zeros(num_resets, 2, device=self.device)
+                    xy[:, :2] = self.franka_default_xy
+                    noise = 0.05 + self.start_position_noise * torch.rand(num_resets, 2, device=self.device)
+                    noise = noise * ((torch.randint_like(noise, low=0, high=2) * 2) - 1)
+                    sampled_cube_state[:, :2] = xy + noise
+                else:
+                    xy = torch.zeros(num_resets, 2, device=self.device)
+                    xy[:, :2] = self.franka_default_xy
+                    sampled_cube_state[:, :2] = xy + torch.tensor([0.1, 0], device=self.device)
 
-        # Sample rotation value
+                    # Sample rotation value
         if self.start_rotation_noise > 0:
             aa_rot = torch.zeros(num_resets, 3, device=self.device)
             aa_rot[:, 2] = 2.0 * self.start_rotation_noise * (torch.rand(num_resets, device=self.device) - 0.5)
@@ -673,7 +686,7 @@ class RobotPushObject(VecTask):
     def override_movement(self, target_pos):
         v = (self._cubeA_state[:, :2] - self._eef_state[:, :2])
         v = torch.nn.functional.normalize(v, dim=-1) / 5
-        v[normalized_2d_distance(self._cubeA_state[:,:2], self.target_pos[:, :2]) < 0.03] = torch.zeros_like(v[0])
+        v[normalized_2d_distance(self._cubeA_state[:,:2], self.target_pos[:, :2], self._init_cubeA_state[:,:2], torch.tensor(False)) < 0.03] = torch.zeros_like(v[0])
         return v
 
     def pre_physics_step(self, actions):
@@ -682,7 +695,7 @@ class RobotPushObject(VecTask):
 
         # u_arm expect num_envs x 6 matrix with forces
         u_arm = self.actions[:, :]
-        if False:
+        if True:
             u_arm = self.override_movement(self._cubeA_state[:, :3])
         u_arm = torch.nn.functional.pad(u_arm, (0,4), "constant", 0)
         u_gripper = torch.ones(self.num_envs, device=self.device) * -1 # close gripper
@@ -792,6 +805,6 @@ def compute_cube_dist_reward(
 ):
     # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
 
-    d = normalized_2d_distance(states["cubeA_pos"], states["target_pos"], states["cubeA_init_pos"], torch.tensor(False))
+    d = torch.norm(states["cubeA_pos_goal_relative_2d"], dim=-1)
     reset_buf = progress_buf >= max_episode_length - 1
     return 1 - torch.tanh(d), reset_buf
