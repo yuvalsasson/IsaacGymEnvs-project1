@@ -26,18 +26,15 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import numpy as np
 import os
-import torch
-import torch.nn.functional
-import wandb
-from isaacgym import gymtorch
-from isaacgym import gymapi
-from isaacgym.torch_utils import *
 
-from isaacgymenvs.utils.torch_jit_utils import *
+import torch.nn.functional
+from isaacgym import gymapi
+from isaacgym import gymtorch
+
 from isaacgymenvs.tasks.base.vec_task import VecTask
 from isaacgymenvs.utils.torch_jit_utils import *
+
 
 def normalized_2d_distance(dst, src, original_location, normalize):
     d = dst[:, :2] - src[:, :2]
@@ -457,6 +454,7 @@ class RobotPushObject(VecTask):
             # Last positions
             "eef_last_pos": self.states["eef_pos"].clone().to(self.device) if "eef_pos" in self.states else None,
             "cubeA_last_pos": self.states["cubeA_pos"].clone().to(self.device) if "cubeA_pos" in self.states else None,
+            "cubeA_pos_goal_relative_2d_prev": self.states["cubeA_pos_goal_relative_2d"].clone().to(self.device) if "cubeA_pos_goal_relative_2d" in self.states else None,
             "cubeA_init_pos": self._init_cubeA_state,
 
             # Goal
@@ -478,7 +476,7 @@ class RobotPushObject(VecTask):
         self._update_states()
 
     def compute_reward(self, actions):
-        self.rew_buf[:], self.reset_buf[:] = compute_cube_dist_reward(
+        self.rew_buf[:], self.reset_buf[:] = compute_reward_based_on_delta_dist(
             self.reset_buf, self.progress_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
         )
 
@@ -549,6 +547,8 @@ class RobotPushObject(VecTask):
             self.sim, gymtorch.unwrap_tensor(self._root_state),
             gymtorch.unwrap_tensor(multi_env_ids_cubes_int32), len(multi_env_ids_cubes_int32))
 
+        for key, value in self.states.items():
+            self.states[key] = value
         self.progress_buf[env_ids] = 0
         self.reset_buf[env_ids] = 0
 
@@ -695,7 +695,7 @@ class RobotPushObject(VecTask):
 
         # u_arm expect num_envs x 6 matrix with forces
         u_arm = self.actions[:, :]
-        if True:
+        if False:
             u_arm = self.override_movement(self._cubeA_state[:, :3])
         u_arm = torch.nn.functional.pad(u_arm, (0,4), "constant", 0)
         u_gripper = torch.ones(self.num_envs, device=self.device) * -1 # close gripper
@@ -808,3 +808,19 @@ def compute_cube_dist_reward(
     d = torch.norm(states["cubeA_pos_goal_relative_2d"], dim=-1)
     reset_buf = progress_buf >= max_episode_length - 1
     return 1 - torch.tanh(d), reset_buf
+
+@torch.jit.script
+def compute_reward_based_on_delta_dist(
+    reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
+):
+    # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+    d = torch.norm(states[  "cubeA_pos_goal_relative_2d"], dim=-1)
+
+    old_d = d.clone().to(d.get_device()).float()
+    not_reset_env_idx = progress_buf != 1
+
+    old_d[not_reset_env_idx] = torch.norm(states["cubeA_pos_goal_relative_2d_prev"], dim=-1)[not_reset_env_idx]
+    delta_d = d - old_d
+    reset_buf = progress_buf >= max_episode_length - 1
+    rewards = -torch.tanh(100 * delta_d)
+    return rewards, reset_buf
