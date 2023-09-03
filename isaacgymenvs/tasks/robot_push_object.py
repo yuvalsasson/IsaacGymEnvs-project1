@@ -372,6 +372,9 @@ class RobotPushObject(VecTask):
         self._init_cubeA_state = torch.zeros(self.num_envs, 13, device=self.device)
         self._init_cubeB_state = torch.zeros(self.num_envs, 13, device=self.device)
 
+        #Setup target
+        self.target_pos = torch.zeros(self.num_envs, 3, device=self.device)
+
         # Setup data
         self.init_data()
 
@@ -476,7 +479,7 @@ class RobotPushObject(VecTask):
         self._update_states()
 
     def compute_reward(self, actions):
-        self.rew_buf[:], self.reset_buf[:] = compute_reward_based_on_delta_dist(
+        self.rew_buf[:], self.reset_buf[:] = compute_reward_based_on_delta_dist_with_reset(
             self.reset_buf, self.progress_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
         )
 
@@ -492,10 +495,9 @@ class RobotPushObject(VecTask):
         env_ids_int32 = env_ids.to(dtype=torch.int32)
 
         # Random target goal
-        self.target_pos = torch.zeros(len(env_ids), 3, device=self.device)
-        self.target_pos[:, :2] = torch.tensor(self._table_surface_pos[:2], device=self.device, dtype=torch.float32)
-        self.target_pos[:, :2] += torch.tensor([0.40, 0.0], device=self.device, dtype=torch.float32)
-        self.target_pos[:, 2] = self._table_surface_pos[2] + self.states["cubeA_size"].squeeze(-1)[env_ids] / 2
+        self.target_pos[env_ids, :2] = torch.tensor(self._table_surface_pos[:2], device=self.device, dtype=torch.float32)
+        self.target_pos[env_ids, :2] += torch.tensor([0.40, 0.0], device=self.device, dtype=torch.float32)
+        self.target_pos[env_ids, 2] = self._table_surface_pos[2] + self.states["cubeA_size"].squeeze(-1)[env_ids] / 2
 
         # Reset agent
         reset_noise = torch.rand((len(env_ids), 9), device=self.device)
@@ -814,7 +816,7 @@ def compute_reward_based_on_delta_dist(
     reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
 ):
     # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
-    d = torch.norm(states[  "cubeA_pos_goal_relative_2d"], dim=-1)
+    d = torch.norm(states["cubeA_pos_goal_relative_2d"], dim=-1)
 
     old_d = d.clone().to(d.get_device()).float()
     not_reset_env_idx = progress_buf != 1
@@ -823,4 +825,22 @@ def compute_reward_based_on_delta_dist(
     delta_d = d - old_d
     reset_buf = progress_buf >= max_episode_length - 1
     rewards = -torch.tanh(100 * delta_d)
+    return rewards, reset_buf
+
+@torch.jit.script
+def compute_reward_based_on_delta_dist_with_reset(
+    reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
+):
+    # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+    d = torch.norm(states["cubeA_pos_goal_relative_2d"], dim=-1)
+
+    old_d = d.clone().to(d.get_device()).float()
+    not_reset_env_idx = progress_buf != 1
+
+    old_d[not_reset_env_idx] = torch.norm(states["cubeA_pos_goal_relative_2d_prev"], dim=-1)[not_reset_env_idx]
+    delta_d = d - old_d
+    reset_buf = progress_buf >= max_episode_length - 1
+    reached_goal = d < 0.02
+    rewards = -torch.tanh(100 * delta_d) + reached_goal * 10
+    reset_buf = torch.where(reached_goal, torch.ones_like(reset_buf), reset_buf)
     return rewards, reset_buf
