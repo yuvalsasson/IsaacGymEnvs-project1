@@ -18,6 +18,7 @@ env:
   frankaPositionNoise: 0.0
   frankaRotationNoise: 0.0
   frankaDofNoise: 0.0 # cube joint position random pose
+  targetPositionNoise: 0.80 #square size for random target
 
   aggregateMode: 3
 

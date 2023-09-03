@@ -29,6 +29,7 @@
 import os
 
 import torch.nn.functional
+import wandb
 from isaacgym import gymapi
 from isaacgym import gymtorch
 
@@ -94,6 +95,7 @@ class RobotPushObject(VecTask):
         self.franka_rotation_noise = self.cfg["env"]["frankaRotationNoise"]
         self.franka_dof_noise = self.cfg["env"]["frankaDofNoise"]
         self.aggregate_mode = self.cfg["env"]["aggregateMode"]
+        self.target_position_noise = self.cfg["env"]["targetPositionNoise"]
 
         # Create dicts to pass to reward function
         self.reward_settings = {
@@ -153,6 +155,8 @@ class RobotPushObject(VecTask):
 
         self.up_axis = "z"
         self.up_axis_idx = 2
+
+        self.episode = None
 
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device, graphics_device_id=graphics_device_id, headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
@@ -375,6 +379,8 @@ class RobotPushObject(VecTask):
         #Setup target
         self.target_pos = torch.zeros(self.num_envs, 3, device=self.device)
 
+        self.episode = torch.zeros(self.num_envs, device=self.device)
+
         # Setup data
         self.init_data()
 
@@ -496,7 +502,7 @@ class RobotPushObject(VecTask):
 
         # Random target goal
         self.target_pos[env_ids, :2] = torch.tensor(self._table_surface_pos[:2], device=self.device, dtype=torch.float32)
-        self.target_pos[env_ids, :2] += torch.tensor([0.40, 0.0], device=self.device, dtype=torch.float32)
+        self.target_pos[env_ids, :2] = (torch.rand_like(self.target_pos[env_ids, :2], device=self.device, dtype=torch.float32) - 0.5) * self.target_position_noise
         self.target_pos[env_ids, 2] = self._table_surface_pos[2] + self.states["cubeA_size"].squeeze(-1)[env_ids] / 2
 
         # Reset agent
@@ -553,6 +559,7 @@ class RobotPushObject(VecTask):
             self.states[key] = value
         self.progress_buf[env_ids] = 0
         self.reset_buf[env_ids] = 0
+        self.episode[env_ids] += 1
 
     def _reset_init_cube_state(self, cube, env_ids, check_valid=True):
         """
@@ -640,7 +647,7 @@ class RobotPushObject(VecTask):
                 if self.start_position_noise != 0.0:
                     xy = torch.zeros(num_resets, 2, device=self.device)
                     xy[:, :2] = self.franka_default_xy
-                    noise = 0.05 + self.start_position_noise * torch.rand(num_resets, 2, device=self.device)
+                    noise = 0.05 + self.start_position_noise * torch.rand(num_resets, 2, device=self.device) * (torch.minimum(torch.ones_like(self.episode), self.episode // 10_000))[env_ids, None]
                     noise = noise * ((torch.randint_like(noise, low=0, high=2) * 2) - 1)
                     sampled_cube_state[:, :2] = xy + noise
                 else:
@@ -730,8 +737,25 @@ class RobotPushObject(VecTask):
         self.compute_observations()
         self.compute_reward(self.actions)
 
+        #viz target
+        if self.viewer:
+            self.gym.clear_lines(self.viewer)
+            self.gym.refresh_rigid_body_state_tensor(self.sim)
+
+            target_pos = self.target_pos
+            up = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
+
+            for i in range(self.num_envs):
+                pz = (target_pos[i] + quat_apply(up, to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
+
+                p0 = target_pos[i].cpu().numpy()
+                self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], pz[0], pz[1], pz[2]], [0.1, 0.1, 0.85])
+
+
+
+
         # debug viz
-        if self.viewer and self.debug_viz:
+        elif self.viewer and self.debug_viz:
             self.gym.clear_lines(self.viewer)
             self.gym.refresh_rigid_body_state_tensor(self.sim)
 
