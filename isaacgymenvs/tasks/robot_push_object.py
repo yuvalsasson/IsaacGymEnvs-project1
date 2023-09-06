@@ -497,13 +497,34 @@ class RobotPushObject(VecTask):
 
         return self.obs_buf
 
+    def increasing_noise(self, noise):
+        episode_for_full_noise = 5_000.0
+        altered_noise = self.episode / episode_for_full_noise
+
+        # set noise bounds
+        altered_noise[altered_noise < 0] = 0
+        altered_noise[altered_noise >= episode_for_full_noise] = 1
+
+        return noise * altered_noise
+
+    def generate_target_position(self, env_ids, noise=0, enable_noise_after=0):
+        pos = torch.zeros((len(env_ids), 3), device=self.device) # 3 = xyz
+
+        pos[:, 2] = self._table_surface_pos[2] + self.states["cubeA_size"].squeeze(-1)[env_ids] / 2 # same z
+        constant_xy = torch.tensor([0.40, 0], device=self.device)
+        # generate random xy
+        pos[:, :2] = constant_xy
+        env_ids_to_add_noise = env_ids[self.episode[env_ids] >= enable_noise_after]
+        if torch.any(env_ids_to_add_noise):
+            pos[self.episode[env_ids] >= enable_noise_after, :2] = (torch.rand_like(pos[self.episode[env_ids] >= enable_noise_after, :2]) - 0.5) * self.increasing_noise(noise)[env_ids_to_add_noise, None]
+        return pos
+
+
     def reset_idx(self, env_ids):
         env_ids_int32 = env_ids.to(dtype=torch.int32)
 
         # Random target goal
-        self.target_pos[env_ids, :2] = torch.tensor(self._table_surface_pos[:2], device=self.device, dtype=torch.float32)
-        self.target_pos[env_ids, :2] = (torch.rand_like(self.target_pos[env_ids, :2], device=self.device, dtype=torch.float32) - 0.5) * self.target_position_noise
-        self.target_pos[env_ids, 2] = self._table_surface_pos[2] + self.states["cubeA_size"].squeeze(-1)[env_ids] / 2
+        self.target_pos[env_ids] = self.generate_target_position(env_ids, self.target_position_noise)
 
         # Reset agent
         reset_noise = torch.rand((len(env_ids), 9), device=self.device)
@@ -647,7 +668,7 @@ class RobotPushObject(VecTask):
                 if self.start_position_noise != 0.0:
                     xy = torch.zeros(num_resets, 2, device=self.device)
                     xy[:, :2] = self.franka_default_xy
-                    noise = 0.05 + self.start_position_noise * torch.rand(num_resets, 2, device=self.device) * (torch.minimum(torch.ones_like(self.episode), self.episode // 10_000))[env_ids, None]
+                    noise = 0.05 + self.start_position_noise * torch.rand(num_resets, 2, device=self.device)
                     noise = noise * ((torch.randint_like(noise, low=0, high=2) * 2) - 1)
                     sampled_cube_state[:, :2] = xy + noise
                 else:
@@ -738,7 +759,7 @@ class RobotPushObject(VecTask):
         self.compute_reward(self.actions)
 
         #viz target
-        if self.viewer:
+        if self.viewer and False:
             self.gym.clear_lines(self.viewer)
             self.gym.refresh_rigid_body_state_tensor(self.sim)
 
@@ -865,6 +886,6 @@ def compute_reward_based_on_delta_dist_with_reset(
     delta_d = d - old_d
     reset_buf = progress_buf >= max_episode_length - 1
     reached_goal = d < 0.02
-    rewards = -torch.tanh(100 * delta_d) + reached_goal * 10
-    reset_buf = torch.where(reached_goal, torch.ones_like(reset_buf), reset_buf)
+    rewards = -torch.tanh(100 * delta_d)
+    # reset_buf = torch.where(reached_goal, torch.ones_like(reset_buf), reset_buf)
     return rewards, reset_buf
