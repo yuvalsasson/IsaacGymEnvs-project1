@@ -524,7 +524,7 @@ class RobotPushObject(VecTask):
         env_ids_int32 = env_ids.to(dtype=torch.int32)
 
         # Random target goal
-        self.target_pos[env_ids] = self.generate_target_position(env_ids, self.target_position_noise)
+        self.target_pos[env_ids, :] = torch.tensor([0.40, 0, 1.0], device=self.device) # self.generate_target_position(env_ids, self.target_position_noise)
 
         # Reset agent
         reset_noise = torch.rand((len(env_ids), 9), device=self.device)
@@ -776,7 +776,7 @@ class RobotPushObject(VecTask):
 
 
         # debug viz
-        elif self.viewer and self.debug_viz:
+        if self.viewer and self.debug_viz:
             self.gym.clear_lines(self.viewer)
             self.gym.refresh_rigid_body_state_tensor(self.sim)
 
