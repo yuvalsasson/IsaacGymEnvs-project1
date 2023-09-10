@@ -502,8 +502,8 @@ class RobotPushObject(VecTask):
         altered_noise = self.episode / episode_for_full_noise
 
         # set noise bounds
-        altered_noise[altered_noise < 0] = 0
-        altered_noise[altered_noise >= episode_for_full_noise] = 1
+        altered_noise[altered_noise < 0] = 0.0
+        altered_noise[altered_noise >= episode_for_full_noise] = 1.0
 
         return noise * altered_noise
 
@@ -524,7 +524,10 @@ class RobotPushObject(VecTask):
         env_ids_int32 = env_ids.to(dtype=torch.int32)
 
         # Random target goal
-        self.target_pos[env_ids, :] = torch.tensor([0.40, 0, 1.0], device=self.device) # self.generate_target_position(env_ids, self.target_position_noise)
+        if False:
+            self.target_pos[env_ids, :] = torch.tensor([0.40, 0, 1.0], device=self.device) #  fixed location
+        else:
+            self.generate_target_position(env_ids, self.target_position_noise)
 
         # Reset agent
         reset_noise = torch.rand((len(env_ids), 9), device=self.device)
