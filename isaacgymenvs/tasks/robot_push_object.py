@@ -525,7 +525,7 @@ class RobotPushObject(VecTask):
 
         # Random target goal
         if False:
-            self.target_pos[env_ids, :] = torch.tensor([0.40, 0, 1.0], device=self.device) #  fixed location
+            self.target_pos[env_ids, :] = torch.tensor([0.40, 0, 1.06], device=self.device) #  fixed location
         else:
             self.generate_target_position(env_ids, self.target_position_noise)
 
