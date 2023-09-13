@@ -103,7 +103,7 @@ class FrankaCubeStack(VecTask):
 
         # dimensions
         # obs include: cubeA_pose (7) + target_position (3) + eef_pose (7) + q_gripper (2)
-        self.cfg["env"]["numObservations"] = 19 if self.control_type == "osc" else 26
+        self.cfg["env"]["numObservations"] = 24 if self.control_type == "osc" else 26
         self.cfg["env"]["numActions"] = 2
 
         # Values to be filled in at runtime
@@ -408,16 +408,31 @@ class FrankaCubeStack(VecTask):
             "q": self._q[:, :],
             "q_gripper": self._q[:, -2:],
             "eef_pos": self._eef_state[:, :3],
+            "eef_pos_2d": self._eef_state[:, :2],
             "eef_quat": self._eef_state[:, 3:7],
             "eef_vel": self._eef_state[:, 7:],
+            "eef_vel_2d": self._eef_state[:, 7:],
             "eef_lf_pos": self._eef_lf_state[:, :3],
             "eef_rf_pos": self._eef_rf_state[:, :3],
+
             # Cubes
             "cubeA_quat": self._cubeA_state[:, 3:7],
             "cubeA_pos": self._cubeA_state[:, :3],
-            "cubeA_pos_relative": self._cubeA_state[:, :3] - self._eef_state[:, :3],
+            "cubeA_pos_2d": self._cubeA_state[:, :2],
+
+            # Relatives
+            "cubeA_pos_eef_relative_2d": self._cubeA_state[:, :2] - self._eef_state[:, :2],
+            "cubeA_pos_goal_relative_2d": self._cubeA_state[:, :2] - self.target_position[:, :2],
+            "eef_pos_goal_relative_2d": self._eef_state[:, :2] - self.target_position[:, :2],
+
+            # Last positions
+            "eef_last_pos": self.states["eef_pos"].clone().to(self.device) if "eef_pos" in self.states else None,
+            "cubeA_last_pos": self.states["cubeA_pos"].clone().to(self.device) if "cubeA_pos" in self.states else None,
+            "cubeA_pos_goal_relative_2d_prev": self.states["cubeA_pos_goal_relative_2d"].clone().to(
+                self.device) if "cubeA_pos_goal_relative_2d" in self.states else None,
+
+            # target
             "target_position": self.target_position[:, :3],
-            "cubeA_to_target_position": self.target_position[:, :3] - self._cubeA_state[:, :3],
         })
 
     def _refresh(self):
@@ -437,7 +452,7 @@ class FrankaCubeStack(VecTask):
 
     def compute_observations(self):
         self._refresh()
-        obs = ["cubeA_quat", "cubeA_pos", "cubeA_to_target_position", "eef_pos", "eef_quat"]
+        obs = ["cubeA_quat", "cubeA_pos_2d", "eef_pos", "eef_quat", "target_position", "cubeA_pos_eef_relative_2d", "cubeA_pos_goal_relative_2d", "eef_pos_goal_relative_2d"]
         obs += ["q_gripper"] if self.control_type == "osc" else ["q"]
         self.obs_buf = torch.cat([self.states[ob] for ob in obs], dim=-1)
 
