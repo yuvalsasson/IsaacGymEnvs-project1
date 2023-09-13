@@ -29,6 +29,7 @@
 import numpy as np
 import os
 import torch
+import torch.nn.functional
 
 from isaacgym import gymtorch
 from isaacgym import gymapi
@@ -103,8 +104,7 @@ class FrankaCubeStack(VecTask):
         # dimensions
         # obs include: cubeA_pose (7) + target_position (3) + eef_pose (7) + q_gripper (2)
         self.cfg["env"]["numObservations"] = 19 if self.control_type == "osc" else 26
-        # actions include: delta EEF if OSC (6) or joint torques (7) + bool gripper (1)
-        self.cfg["env"]["numActions"] = 7 if self.control_type == "osc" else 8
+        self.cfg["env"]["numActions"] = 2
 
         # Values to be filled in at runtime
         self.states = {}                        # will be dict filled with relevant states to use for reward calculation
@@ -144,7 +144,8 @@ class FrankaCubeStack(VecTask):
 
         # Franka defaults
         self.franka_default_dof_pos = to_torch(
-            [0, 0.1963, 0, -2.6180, 0, 2.9416, 0.7854, 0.035, 0.035], device=self.device
+            # [0, 0.1963, 0, -2.6180, 0, 2.9416, 0.7854, 0.035, 0.035], device=self.device # original position
+            [8.5004e-03, 5.6514e-01, -7.9857e-03, -2.0813e+00, 9.0008e-03, 2.6464e+00, 7.7926e-01, 2.4078e-09, 6.9505e-10], device=self.device # eef_pos tensor([0.1230, 0.0016, 1.0792], device='cuda:0')
         )
 
         # OSC Gains
@@ -212,16 +213,17 @@ class FrankaCubeStack(VecTask):
         table_asset = self.gym.create_box(self.sim, *[1.2, 1.2, table_thickness], table_opts)
 
         # Create table stand asset
-        table_stand_height = 0.1
+        table_stand_height = 0.001
         table_stand_pos = [-0.5, 0.0, 1.0 + table_thickness / 2 + table_stand_height / 2]
         table_stand_opts = gymapi.AssetOptions()
         table_stand_opts.fix_base_link = True
         table_stand_asset = self.gym.create_box(self.sim, *[0.2, 0.2, table_stand_height], table_opts)
 
-        self.cubeA_size = 0.050
+        self.cubeA_size = 0.070
 
         # Create cubeA asset
         cubeA_opts = gymapi.AssetOptions()
+        cubeA_opts.density = 0.01
         cubeA_asset = self.gym.create_box(self.sim, *([self.cubeA_size] * 3), cubeA_opts)
         cubeA_color = gymapi.Vec3(0.6, 0.1, 0.0)
 
@@ -616,7 +618,9 @@ class FrankaCubeStack(VecTask):
         self.actions = actions.clone().to(self.device)
 
         # Split arm and gripper command
-        u_arm, u_gripper = self.actions[:, :-1], self.actions[:, -1]
+        u_arm = self.actions[:, :]
+        u_arm = torch.nn.functional.pad(u_arm, (0, 4), "constant", 0)
+        u_gripper = torch.ones(self.num_envs, device=self.device) * -1  # close gripper
 
         # print(u_arm, u_gripper)
         # print(self.cmd_limit, self.action_scale)
