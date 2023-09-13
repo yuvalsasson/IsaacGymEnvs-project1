@@ -446,7 +446,7 @@ class FrankaCubeStack(VecTask):
         self._update_states()
 
     def compute_reward(self, actions):
-        self.rew_buf[:], self.reset_buf[:] = compute_franka_reward_test(
+        self.rew_buf[:], self.reset_buf[:] = compute_reward_based_on_delta_dist_with_reset(
             self.reset_buf, self.progress_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
         )
 
@@ -465,7 +465,7 @@ class FrankaCubeStack(VecTask):
 
         # Reset cubes, sampling cube B first, then A
         # if not self._i:
-        self._reset_init_cube_state(cube='B', env_ids=env_ids, check_valid=False)
+        self._reset_init_cube_state(cube='B', env_ids=env_ids, check_valid=False) # This actually reset target pos
         self._reset_init_cube_state(cube='A', env_ids=env_ids, check_valid=True)
         # self._i = True
 
@@ -670,29 +670,29 @@ class FrankaCubeStack(VecTask):
         self.compute_reward(self.actions)
 
         # debug viz
-        if self.viewer and self.debug_viz:
-            self.gym.clear_lines(self.viewer)
-            self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.clear_lines(self.viewer)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
 
-            # Grab relevant states to visualize
-            eef_pos = self.states["eef_pos"]
-            eef_rot = self.states["eef_quat"]
-            cubeA_pos = self.states["cubeA_pos"]
-            cubeA_rot = self.states["cubeA_quat"]
-            target_position = self.states["target_position"]
-            target_position_rot = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
+        # Grab relevant states to visualize
+        eef_pos = self.states["eef_pos"]
+        eef_rot = self.states["eef_quat"]
+        cubeA_pos = self.states["cubeA_pos"]
+        cubeA_rot = self.states["cubeA_quat"]
+        target_position = self.states["target_position"]
+        target_position_rot = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
 
-            # Plot visualizations
-            for i in range(self.num_envs):
-                for pos, rot in zip((target_position,), (cubeA_rot,)):
-                    px = (pos[i] + quat_apply(rot[i], to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
-                    py = (pos[i] + quat_apply(rot[i], to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
-                    pz = (pos[i] + quat_apply(rot[i], to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
+        # Plot visualizations
+        plotted_envs = self.num_envs if self.viewer and self.debug_viz else 1
+        for i in range(plotted_envs):
+            for pos, rot in zip((target_position,), (cubeA_rot,)):
+                px = (pos[i] + quat_apply(rot[i], to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
+                py = (pos[i] + quat_apply(rot[i], to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
+                pz = (pos[i] + quat_apply(rot[i], to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
 
-                    p0 = pos[i].cpu().numpy()
-                    # self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], px[0], px[1], px[2]], [0.85, 0.1, 0.1]) # X
-                    # self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], py[0], py[1], py[2]], [0.1, 0.85, 0.1]) # Y
-                    self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], pz[0], pz[1], pz[2]], [0.1, 0.1, 0.85]) # Z
+                p0 = pos[i].cpu().numpy()
+                # self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], px[0], px[1], px[2]], [0.85, 0.1, 0.1]) # X
+                # self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], py[0], py[1], py[2]], [0.1, 0.85, 0.1]) # Y
+                self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], pz[0], pz[1], pz[2]], [0.1, 0.1, 0.85]) # Z
 
 #####################################################################
 ###=========================jit functions=========================###
@@ -760,4 +760,24 @@ def compute_franka_reward_test(
     reset_buf = torch.where((progress_buf >= max_episode_length - 1), torch.ones_like(reset_buf),
                             reset_buf)
     rewards = torch.zeros_like(reset_buf)
+    return rewards, reset_buf
+
+@torch.jit.script
+def compute_reward_based_on_delta_dist_with_reset(
+    reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
+):
+    # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+    d = torch.norm(states["cubeA_pos_goal_relative_2d"], dim=-1)
+
+    old_d = d.clone().to(d.get_device()).float()
+    not_reset_env_idx = progress_buf != 1
+
+    old_d[not_reset_env_idx] = torch.norm(states["cubeA_pos_goal_relative_2d_prev"], dim=-1)[not_reset_env_idx]
+    delta_d = d - old_d
+    rewards = -torch.tanh(100 * delta_d)
+
+    reset_buf = progress_buf >= max_episode_length - 1
+    reached_goal = d < 0.02
+    reset_buf = torch.where(reached_goal, torch.ones_like(reset_buf), reset_buf)
+
     return rewards, reset_buf
