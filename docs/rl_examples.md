@@ -312,7 +312,7 @@ Config files used for this task are:
 
 ![image](images/rl_franka.png)
 
-### Franka Cube Stack [franka_cube_stack.py](../isaacgymenvs/tasks/franka_cube_stack.py)
+### Franka Cube Stack [franka_cube_stack.py](../isaacgymenvs/tasks/franka_push_cube.py)
 
 The Franka Cube Stack example shows solving a cube stack task using either operational space control (OSC) or joint space torque control.
 OSC control provides an example of using direct GPU mass-matrix access API.
@@ -321,8 +321,8 @@ It can be launched with command line argument `task=FrankaCubeStack`.
 
 Config files used for this task are:
 
--   **Task config**: [FrankaCubeStack.yaml](../isaacgymenvs/cfg/task/FrankaCubeStack.yaml)
--   **rl_games training config**: [FrankaCubeStackPPO.yaml](../isaacgymenvs/cfg/train/FrankaCubeStackPPO.yaml)
+-   **Task config**: [FrankaCubeStack.yaml](../isaacgymenvs/cfg/task/FrankaPushCube.yaml)
+-   **rl_games training config**: [FrankaCubeStackPPO.yaml](../isaacgymenvs/cfg/train/FrankaPushCubePPO.yaml)
 
 ![image](images/rl_franka_cube_stack.png)
 
