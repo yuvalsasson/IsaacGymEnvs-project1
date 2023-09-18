@@ -30,13 +30,13 @@ import numpy as np
 import os
 import torch
 import torch.nn.functional
-
 from isaacgym import gymtorch
 from isaacgym import gymapi
 
 from isaacgymenvs.utils.torch_jit_utils import quat_mul, to_torch, tensor_clamp, quat_apply
 from isaacgymenvs.tasks.base.vec_task import VecTask
 
+from isaacgymenvs.utils.trajectory_logger import TrajectoryLogger
 
 @torch.jit.script
 def axisangle2quat(vec, eps=1e-6):
@@ -164,6 +164,8 @@ class FrankaCubeStack(VecTask):
 
         # Refresh tensors
         self._refresh()
+
+        self.trajectory_logger = TrajectoryLogger(self.num_envs) if self.cfg['offline']['save_trajectories'] else None
 
     def create_sim(self):
         self.sim_params.up_axis = gymapi.UP_AXIS_Z
@@ -446,19 +448,18 @@ class FrankaCubeStack(VecTask):
         self._update_states()
 
     def compute_reward(self, actions):
-        self.rew_buf[:], self.reset_buf[:] = compute_reward_based_on_delta_dist_with_reset(
+        self.rew_buf[:], self.reset_buf[:], self.reached_goal[:] = compute_reward_based_on_delta_dist_with_reset(
             self.reset_buf, self.progress_buf, self.actions, self.states, self.reward_settings, self.max_episode_length
         )
 
     def compute_observations(self):
         self._refresh()
-        obs = ["cubeA_quat", "cubeA_pos_2d", "eef_pos", "eef_quat", "target_position", "cubeA_pos_eef_relative_2d", "cubeA_pos_goal_relative_2d", "eef_pos_goal_relative_2d"]
-        obs += ["q_gripper"] if self.control_type == "osc" else ["q"]
-        self.obs_buf = torch.cat([self.states[ob] for ob in obs], dim=-1)
+        obs_keys = ["cubeA_quat", "cubeA_pos_2d", "eef_pos", "eef_quat", "target_position", "cubeA_pos_eef_relative_2d", "cubeA_pos_goal_relative_2d", "eef_pos_goal_relative_2d"]
+        obs_keys += ["q_gripper"] if self.control_type == "osc" else ["q"]
+        obs = {key : self.states[key] for key in obs_keys}
+        self.obs_buf = torch.cat([self.states[ob] for ob in obs_keys], dim=-1)
 
-        maxs = {ob: torch.max(self.states[ob]).item() for ob in obs}
-
-        return self.obs_buf
+        return obs
 
     def reset_idx(self, env_ids):
         env_ids_int32 = env_ids.to(dtype=torch.int32)
@@ -515,6 +516,7 @@ class FrankaCubeStack(VecTask):
 
         self.progress_buf[env_ids] = 0
         self.reset_buf[env_ids] = 0
+        self.reached_goal[env_ids] = 0
 
     def _reset_init_cube_state(self, cube, env_ids, check_valid=True):
         """
@@ -666,8 +668,11 @@ class FrankaCubeStack(VecTask):
         if len(env_ids) > 0:
             self.reset_idx(env_ids)
 
-        self.compute_observations()
+        obs = self.compute_observations()
         self.compute_reward(self.actions)
+
+        if self.trajectory_logger is not None: # trajectory_logger is not None when configuration enables it
+            self.trajectory_logger.digest(obs, self.actions, self.rew_buf, self.reset_buf, self.reached_goal)
 
         # debug viz
         self.gym.clear_lines(self.viewer)
@@ -766,7 +771,7 @@ def compute_franka_reward_test(
 def compute_reward_based_on_delta_dist_with_reset(
     reset_buf, progress_buf, actions, states, reward_settings, max_episode_length
 ):
-    # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Dict[str, Tensor], Dict[str, float], float) -> Tuple[Tensor, Tensor, Tensor]
     d = torch.norm(states["cubeA_pos_goal_relative_2d"], dim=-1)
 
     old_d = d.clone().to(d.get_device()).float()
@@ -780,4 +785,4 @@ def compute_reward_based_on_delta_dist_with_reset(
     reached_goal = d < 0.02
     reset_buf = torch.where(reached_goal, torch.ones_like(reset_buf), reset_buf)
 
-    return rewards, reset_buf
+    return rewards, reset_buf, reached_goal
