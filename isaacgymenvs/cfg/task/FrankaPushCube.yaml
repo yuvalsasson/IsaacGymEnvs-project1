@@ -62,3 +62,4 @@ task:
 
 offline:
   save_trajectories: False
+  test: False
