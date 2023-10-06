@@ -687,12 +687,12 @@ class FrankaCubeStack(VecTask):
         target_position_rot = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
 
         # Plot visualizations
-        plotted_envs = self.num_envs if self.viewer and self.debug_viz else 1
+        plotted_envs = self.num_envs if self.viewer and (self.debug_viz or self.cfg['offline'].get('test', False)) else 1
         for i in range(plotted_envs):
             for pos, rot in zip((target_position,), (cubeA_rot,)):
-                px = (pos[i] + quat_apply(rot[i], to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
-                py = (pos[i] + quat_apply(rot[i], to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
-                pz = (pos[i] + quat_apply(rot[i], to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
+                px = (pos[i] + quat_apply(target_position_rot, to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
+                py = (pos[i] + quat_apply(target_position_rot, to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
+                pz = (pos[i] + quat_apply(target_position_rot, to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
 
                 p0 = pos[i].cpu().numpy()
                 # self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], px[0], px[1], px[2]], [0.85, 0.1, 0.1]) # X
