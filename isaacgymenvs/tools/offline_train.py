@@ -1,58 +1,64 @@
-import pickle
-import glob
-import sys
-from torch.utils.data import Dataset, DataLoader
-from collections import OrderedDict
+import numpy as np
+import torch
+import wandb
+import random
+from agent import CQLSAC
+from torch.utils.data import DataLoader, TensorDataset
+import h5py
+from tqdm import tqdm
+
+def save(args, save_name, model, wandb, ep=None):
+    import os
+    save_dir = './trained_models/'
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    if ep is not None:
+        torch.save(model.state_dict(), save_dir + args.run_name + save_name + str(ep) + ".pth")
+        wandb.save(save_dir + args.run_name + save_name + str(ep) + ".pth")
+    else:
+        torch.save(model.state_dict(), save_dir + args.run_name + save_name + ".pth")
+        wandb.save(save_dir + args.run_name + save_name + ".pth")
 
 
-class TrajectoryDataset(Dataset):
-    def __init__(self, trajectory_dir, transform=None):
-        self.trajectory_dir = trajectory_dir
-        self.transform = transform
-        self.trajectory_count_per_file = self._fill_trajectory_metadata()
-        self.total_count = sum(self.trajectory_count_per_file.values())
+def get_keys(h5file):
+    keys = []
 
-    def _fill_trajectory_metadata(self) -> OrderedDict:
-        """ Returns an OrderedDict with entries for each trajectory pickle file.
-        Each entry contains the starting index for trajectories within the file and number within the file
-        """
-        trajectory_filenames = glob.glob(sys.path.join(self.trajectory_dir, "*"))
-        trajectory_file_metadata = OrderedDict()
-        for filename in trajectory_filenames:
-            trajectory_file_metadata[filename] = self._get_trajectory_count(filename)
-        # consider adding starting index at each file to allow binary search
-        return trajectory_file_metadata
+    def visitor(name, item):
+        if isinstance(item, h5py.Dataset):
+            keys.append(name)
 
-    def _get_trajectory_count(self, pickle_path):
-        with open(pickle_path) as pkl:
-            trajectory_df = pickle.load(pkl)
-            return len(trajectory_df.index)
+    h5file.visititems(visitor)
+    return keys
 
-    def __len__(self):
-        return self.total_count
+def load_hdf(hdf5_path):
+    data_dict = {}
+    with h5py.File(hdf5_path, 'r') as dataset_file:
+        for k in tqdm(get_keys(dataset_file), desc="load datafile"):
+            try:  # first try loading as an array
+                data_dict[k] = dataset_file[k][:]
+            except ValueError as e:  # try loading as a scalar
+                data_dict[k] = dataset_file[k][()]
+    return data_dict
 
-    def __getitem__(self, idx):
-        """ this returns a trajectory at index i"""
-        curr_index = 0
-        selected_trajectory_path = None
-        for trajectory_path, number_of_entries in self._fill_trajectory_metadata():
-            if curr_index <= idx < curr_index + number_of_entries:
-                selected_trajectory_path = trajectory_path
-                break
-            curr_index += number_of_entries
-        if selected_trajectory_path is None:
-            raise IndexError("idx is not within TrajectoryDataset bounds")
-        idx_within_file = idx - curr_index
-        with open(selected_trajectory_path) as trajectory_file:
-            trajectory_df = pickle.load(trajectory_file)
-            traj = trajectory_df.iloc[idx_within_file]
-            if self.transform:
-                traj = self.transform(traj)
-            return traj
 
-def get_dataloader(trajectory_dir="trajectories", batch_size=256):
-    dataset = TrajectoryDataset(trajectory_dir=trajectory_dir)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+def prep_dataloader(hdf_path, batch_size=256, seed=1):
+    dataset = load_hdf(hdf_path)
+    tensors = {}
+    for k, v in dataset.items():
+        if k in ["actions", "observations", "next_observations", "rewards", "terminals"]:
+            if k is not "terminals":
+                tensors[k] = torch.from_numpy(v).float()
+            else:
+                tensors[k] = torch.from_numpy(v).long()
+
+    tensordata = TensorDataset(tensors["observations"],
+                               tensors["actions"],
+                               tensors["rewards"][:, None],
+                               tensors["next_observations"],
+                               tensors["terminals"][:, None])
+    dataloader = DataLoader(tensordata, batch_size=batch_size, shuffle=True)
+
+    return dataloader
 
 def train(config):
     np.random.seed(config.seed)
@@ -61,7 +67,7 @@ def train(config):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    dataloader = get_dataloader(config.trajectory_dir, batch_size=config.batch_size)
+    dataloader = prep_dataloader(config.dataset_path, batch_size=config.batch_size)
     batches = 0
     with wandb.init(project="CQL-offline", name=config.run_name, config=config):
         agent = CQLSAC(state_size=config.observation_space_size,
@@ -75,8 +81,8 @@ def train(config):
                        target_action_gap=config.target_action_gap,
                        device=device)
 
-        for i in range(1, config.episodes + 1):
-            for batch_idx, experience in enumerate(dataloader):
+        for i in tqdm(range(1, config.episodes + 1), position=0):
+            for batch_idx, experience in enumerate(tqdm(dataloader, position=1, leave=False)):
                 states, actions, rewards, next_states, dones = experience # experience is trajectories but agent expects tensor of steps
                 states = states.to(device)
                 actions = actions.to(device)
@@ -88,7 +94,7 @@ def train(config):
                 batches += 1
 
             wandb.log({
-                "Average10": np.mean(average10),
+                #"Average10": np.mean(average10),
                 "Policy Loss": policy_loss,
                 "Alpha Loss": alpha_loss,
                 "Lagrange Alpha Loss": lagrange_alpha_loss,
@@ -102,5 +108,26 @@ def train(config):
                 "Episode": i
             })
 
+            save(config, save_name="IQL", model=agent.actor_local, wandb=wandb, ep=str(i))
+
+class FrankaPushCube():
+    def __init__(self):
+        self.seed = 0
+        self.tau = 0.95
+        self.learning_rate = 5e-4
+        self.hidden_size = 400
+        self.observation_space_size = 24
+        self.action_space_size = 2
+        self.hidden_size = 4096
+        self.temperature = 0.2
+        self.with_lagrange = False
+        self.cql_weight = 0.5
+        self.target_action_gap = 0.2
+        self.batch_size = 256
+        self.run_name = 'franka_push_cube_offline'
+        self.episodes = 5
+        self.dataset_path = '/home/user_119/Project/IsaacGymEnvs-project1/isaacgymenvs/robotpush10000000.hdf'
+
 if __name__ == '__main__':
-    train()
+    config = FrankaPushCube()
+    train(config)

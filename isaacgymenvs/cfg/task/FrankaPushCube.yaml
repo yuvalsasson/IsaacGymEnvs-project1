@@ -62,4 +62,8 @@ task:
 
 offline:
   save_trajectories: False
+  sample_count: 10000000
+
   test: False
+  network_path: /home/user_119/Downloads/franka_push_cube_offlineIQL1.pth
+  hidden_size: 4096

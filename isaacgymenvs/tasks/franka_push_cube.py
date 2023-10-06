@@ -37,6 +37,7 @@ from isaacgymenvs.utils.torch_jit_utils import quat_mul, to_torch, tensor_clamp,
 from isaacgymenvs.tasks.base.vec_task import VecTask
 
 from isaacgymenvs.utils.trajectory_logger import TrajectoryLogger
+import isaacgymenvs.tools.utils
 
 @torch.jit.script
 def axisangle2quat(vec, eps=1e-6):
@@ -165,7 +166,11 @@ class FrankaCubeStack(VecTask):
         # Refresh tensors
         self._refresh()
 
-        self.trajectory_logger = TrajectoryLogger(self.num_envs) if self.cfg['offline']['save_trajectories'] else None
+        self.trajectory_logger = TrajectoryLogger(self.num_envs, self.cfg['offline']['sample_count']) if self.cfg['offline']['save_trajectories'] else None
+        self.offline_actor = isaacgymenvs.tools.utils.load(self.cfg['offline']['network_path'],
+                                                           self.cfg["env"]["numObservations"],
+                                                           self.cfg["env"]["numActions"],
+                                                           self.cfg["offline"]["hidden_size"]).to(self.device) if self.cfg['offline']['test'] else None
 
     def create_sim(self):
         self.sim_params.up_axis = gymapi.UP_AXIS_Z
@@ -633,6 +638,10 @@ class FrankaCubeStack(VecTask):
 
     def pre_physics_step(self, actions):
         self.actions = actions.clone().to(self.device)
+        if self.offline_actor is not None:
+            with torch.no_grad():
+                self.actions = torch.stack([self.offline_actor.get_det_action(env_states) for env_states in self.obs_buf]).to(self.device)
+
 
         # Split arm and gripper command
         u_arm = self.actions[:, :]
@@ -668,11 +677,20 @@ class FrankaCubeStack(VecTask):
         if len(env_ids) > 0:
             self.reset_idx(env_ids)
 
-        obs = self.compute_observations()
+        obs = self.obs_buf.detach()
+        info = {
+            "target_position": self.target_position[:, :3],
+            "initial_position": self._init_cubeA_state[:,:3] # only x,y,z
+        }
+        self.compute_observations()
+        ns_obs = self.obs_buf.detach()
         self.compute_reward(self.actions)
 
         if self.trajectory_logger is not None: # trajectory_logger is not None when configuration enables it
-            self.trajectory_logger.digest(obs, self.actions, self.rew_buf, self.reset_buf, self.reached_goal)
+            terminals = self.reached_goal # This is true when episodes end due to termination conditions such as reaching goal
+            timeouts = torch.bitwise_and(self.reset_buf, torch.bitwise_not(self.reached_goal))
+
+            self.trajectory_logger.digest(obs, ns_obs, self.actions, self.rew_buf, self.reset_buf, self.reached_goal, info)
 
         # debug viz
         self.gym.clear_lines(self.viewer)

@@ -1,78 +1,128 @@
-import pandas
-import os
-from functools import wraps
-from time import time
-
-
-def measure(func):
-    """ for measuring execution time"""
-    @wraps(func)
-    def _time_it(*args, **kwargs):
-        start = int(round(time() * 1000))
-        try:
-            return func(*args, **kwargs)
-        finally:
-            end_ = int(round(time() * 1000)) - start
-            print(f"Total execution time: {end_ if end_ > 0 else 0} ms")
-    return _time_it
-
+import time
+import torch
+import numpy as np
+import h5py
+import sys
 
 class Trajectory(object):
     def __init__(self, env_id):
         super(Trajectory, self).__init__()
         self.steps = []
         self.env_id = env_id
+        self.terminal = False
+        self.timeout = False
 
-    def step(self, observations, actions, reward):
-        self.steps.append((observations, actions, reward))
+        self.data = {
+            'observations': [],
+            'next_observations': [],
+            'actions': [],
+            'rewards': [],
+            'terminals': [],
+            'timeouts': [],
 
-    def finish(self, is_reached_goal):
-        return {
-            'steps': self.steps,
-            'step_count': len(self.steps),
-            'total_reward': sum(step[2].values[0] for step in self.steps), # 2 is the reward and [0] is getting the only element
-            'goal_reached': is_reached_goal
+            # additional info
+            'initial_position': [],
+            'target_position': [],
         }
+
+    def step(self, observations, next_observations, actions, reward, terminal, timeout, info):
+        self.data['observations'].append(observations)
+        self.data['next_observations'].append(next_observations)
+        self.data['actions'].append(actions)
+        self.data['rewards'].append(reward)
+        self.data['terminals'].append(terminal)
+        self.data['timeouts'].append(timeout)
+
+        # additional info
+        self.data['initial_position'].append(info['initial_position'])
+        self.data['target_position'].append(info['target_position'])
+
+        self.terminal |= bool(terminal)
+        self.timeout |= bool(timeout)
+
+    def is_finished(self) -> bool:
+        return self.terminal or self.timeout
 
 
 class TrajectoryLogger(object):
     """ Save trajectory information for later usage """
-    def __init__(self, num_env, output_dir='trajectories', prefix='prefix'):
+    def __init__(self, num_env, sample_count, output_path='robotpush'):
         super(TrajectoryLogger, self).__init__()
         self.active_trajectories = [Trajectory(i) for i in range(num_env)]
-        self.output_dir = output_dir
-        os.makedirs(self.output_dir, 0o777, exist_ok=True)
-        self.prefix = prefix
         self.num_envs = num_env
-        self.completed_trajectories = None
+        self.sample_count = sample_count
+        self.output_path = output_path
 
-    def add_completed_trajectories(self, trajectories):
-        """ Add trajectories of completed episodes `self.completed_trajectories`.
-         Evicts to disk if completed_trajectories is too large"""
-        if self.completed_trajectories is None:
-            self.completed_trajectories = pandas.DataFrame(trajectories)
-        else:
-            self.completed_trajectories = self.completed_trajectories.append(pandas.DataFrame(trajectories))
+        self.data = {
+            'observations': [],
+            'next_observations': [],
+            'actions': [],
+            'rewards': [],
+            'terminals': [],
+            'timeouts': [],
 
-        if len(self.completed_trajectories.index) > 1024:
-            self.completed_trajectories.to_pickle(f'{self.output_dir}/{self.prefix}_{time()}.pkl')
-            self.completed_trajectories = None
+            # additional info
+            'initial_position': [],
+            'target_position': [],
+        }
 
-    @measure
-    def digest(self, observations, actions, rewards, reset_flag, reached_goal):
-        altered_obs = {key: list(value.detach().cpu().numpy()) for key, value in observations.items()}
-        observations_df = pandas.DataFrame.from_dict(altered_obs)
-        actions_df = pandas.DataFrame(actions.detach().cpu().numpy())
-        rewards_df = pandas.DataFrame(rewards.detach().cpu().numpy())
-        reset_flag_df = pandas.DataFrame(reset_flag.detach().bool().cpu().numpy())
-        reached_goal_df = pandas.DataFrame(reached_goal.detach().bool().cpu().numpy())
+    def add_trajectory_data(self, trajectory : Trajectory):
+        for key in self.data.keys():
+            self.data[key].extend(trajectory.data[key])
+
+        samples_collected = len(self.data['observations'])
+        progress = samples_collected / self.sample_count
+        print(f"collected {samples_collected} ouf of {self.sample_count}. Progress: {progress * 100}%")
+        if progress >= 1:
+            self.save_data()
+            sys.exit()
+
+    def save_data(self):
+        typed_data = dict(
+            observations=np.array(self.data['observations']).astype(np.float32),
+            actions=np.array(self.data['actions']).astype(np.float32),
+            next_observations=np.array(self.data['next_observations']).astype(np.float32),
+            rewards=np.array(self.data['rewards']).astype(np.float32),
+            terminals=np.array(self.data['terminals']).astype(np.bool),
+            timeouts=np.array(self.data['timeouts']).astype(np.bool),
+        )
+        # Additional data
+        typed_data['infos/initial_position'] = np.array(self.data['initial_position']).astype(np.float32)
+        typed_data['infos/target_position'] = np.array(self.data['target_position']).astype(np.float32)
+
+        # Save to file
+        hfile = h5py.File(self.output_path + str(self.sample_count) + '.hdf', 'w')
+        for k in self.data:
+            if k not in ["observations", "next_observations", "rewards", "actions", "timeouts", "terminals"]:
+                hfile.create_dataset(f"infos/{k}", data=self.data[k])
+            else:
+                hfile.create_dataset(k, data=self.data[k])
+
+
+    def digest(self, observations, next_observations, actions, rewards, terminals, timeouts, info):
+        observations_arr = observations.detach().clone().cpu().numpy()
+        next_observations_arr = next_observations.detach().clone().cpu().numpy()
+        actions_arr = actions.detach().clone().cpu().numpy()
+        rewards_arr = rewards.detach().clone().cpu().numpy()
+        terminals_arr = terminals.detach().clone().cpu().numpy()
+        timeouts_arr = timeouts.detach().clone().cpu().numpy()
+        info_per_env_id = [{key: value[env_id].cpu().numpy() for key, value in info.items()} for env_id in range(self.num_envs)]
 
         completed_trajectories = []
         for env_id in range(self.num_envs):
-            self.active_trajectories[env_id].step(observations_df.iloc[env_id], actions_df.iloc[env_id], rewards_df.iloc[env_id])
-            if reset_flag_df.iloc[env_id].bool():
-                completed_trajectories.append(self.active_trajectories[env_id].finish(reached_goal_df.iloc[env_id].values[0]))
+            self.active_trajectories[env_id].step(observations_arr[env_id],
+                                                  next_observations_arr[env_id],
+                                                  actions_arr[env_id],
+                                                  rewards_arr[env_id],
+                                                  terminals_arr[env_id],
+                                                  timeouts_arr[env_id],
+                                                  info_per_env_id[env_id])
+
+            if self.active_trajectories[env_id].is_finished():
+                # this may be because timeout or termination condition met
+                completed_trajectories.append(self.active_trajectories[env_id])
                 self.active_trajectories[env_id] = Trajectory(env_id)
 
         if completed_trajectories:
-            self.add_completed_trajectories(completed_trajectories)
+            for full_trajectory in completed_trajectories:
+                self.add_trajectory_data(full_trajectory)
