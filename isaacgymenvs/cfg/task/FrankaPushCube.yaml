@@ -62,6 +62,7 @@ task:
 
 offline:
   save_trajectories: False
+  dataset_name: test
   sample_count: 10000000
 
   test: False

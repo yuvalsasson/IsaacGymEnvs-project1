@@ -182,6 +182,7 @@ def evaulate_agent(agent):
 
     # Reset all environments
     obses = env.reset()
+    env.reset_stats()
     env.reset_idx(torch.tensor([env_id for env_id in range(env.num_envs)], device=env.device))
 
     # Run until all environments done once
@@ -197,7 +198,7 @@ def evaulate_agent(agent):
             episodes_reward[first_time_dones] = reward_from_episode_start[first_time_dones]
             env_dones = torch.logical_or(env_dones, done)
             if torch.all(env_dones):
-                return np.mean(episodes_reward.cpu().numpy())
+                return np.mean(episodes_reward.cpu().numpy()), env.goals_reached / env.games_played
 
 
 def save(args, save_name, model, wandb, ep=None):
@@ -251,11 +252,11 @@ def prep_dataloader(hdf_path, batch_size=256, seed=1):
 
     return dataloader
 
-max_reawrd = 0
-def process_learn(batches, agent, wandb, policy_loss, alpha_loss, bellmann_error1, bellmann_error2, cql1_loss, cql2_loss, current_alpha, lagrange_alpha_loss, lagrange_alpha, average_reward, episode, batch_idx):
+def process_learn(batches, agent, wandb, policy_loss, alpha_loss, bellmann_error1, bellmann_error2, cql1_loss, cql2_loss, current_alpha, lagrange_alpha_loss, lagrange_alpha, average_reward, average_win_ratio, episode, batch_idx):
     if batches % config.log_every == 0:
         wandb.log({
             "Average10Reward": np.mean(average_reward),
+            "Average10WinRatio": np.mean(average_win_ratio),
             "Policy Loss": policy_loss,
             "Alpha Loss": alpha_loss,
             "Lagrange Alpha Loss": lagrange_alpha_loss,
@@ -270,23 +271,27 @@ def process_learn(batches, agent, wandb, policy_loss, alpha_loss, bellmann_error
         }, step=batches)
 
     if batches % config.eval_every == 0:
-        eval_reward = evaulate_agent(agent)
-        wandb.log({"Test Reward": eval_reward,
-                   "Episode": episode,
-                   "Batches": batches,
-                   }, step=batches)
+        eval_reward, win_ratio = evaulate_agent(agent)
+        wandb.log({
+            "Test Reward": eval_reward,
+            "Test Win ratio": win_ratio,
+            "Episode": episode,
+            "Batches": batches,
+        }, step=batches)
 
-        print(f"Episode.Batch: {episode}.{batch_idx} | Reward: {eval_reward} | Policy Loss: {policy_loss}")
+        print(f"Episode.Batch: {episode}.{batch_idx} | Reward: {eval_reward} | Win Ratio: {win_ratio} | Policy Loss: {policy_loss}")
         average_reward.append(eval_reward)
-        global max_reward
-        if eval_reward >= 0 and eval_reward > max_reward:
-            max_reward = eval_reward
+        average_win_ratio.append(win_ratio)
+
+        if eval_reward > process_learn.max_reward:
+            process_learn.max_reward = eval_reward
             print(f"new best reward: {eval_reward}")
             save(config, save_name="best net", model=agent.actor_local, wandb=wandb)
 
-
     if batches % config.save_every == 0:
         save(config, save_name=f"net{episode}.{batch_idx}", model=agent.actor_local, wandb=wandb)
+
+process_learn.max_reward = 0
 
 def train(config):
     np.random.seed(config.seed)
@@ -298,7 +303,8 @@ def train(config):
     # create env
     launch_rlg_hydra()
 
-    average10 = deque(maxlen=10)
+    average10reward = deque(maxlen=10)
+    average10winratio = deque(maxlen=10)
 
     dataloader = prep_dataloader(config.dataset_path, batch_size=config.batch_size)
     batches = 0
@@ -321,10 +327,12 @@ def train(config):
                 actions = actions.to(device)
                 rewards = rewards.to(device)
                 next_states = next_states.to(device)
-                dones = dones.to(device)
+                dones = dones.to(device)reset_
                 policy_loss, alpha_loss, bellmann_error1, bellmann_error2, cql1_loss, cql2_loss, current_alpha, lagrange_alpha_loss, lagrange_alpha = agent.learn(
                     (states, actions, rewards, next_states, dones))
-                process_learn(batches, agent, wandb, policy_loss, alpha_loss, bellmann_error1, bellmann_error2, cql1_loss, cql2_loss, current_alpha, lagrange_alpha_loss, lagrange_alpha, average10, i, batch_idx)
+                process_learn(batches, agent, wandb, policy_loss, alpha_loss, bellmann_error1, bellmann_error2,
+                              cql1_loss, cql2_loss, current_alpha, lagrange_alpha_loss, lagrange_alpha, average10reward,
+                              average10winratio, i, batch_idx)
                 batches += 1
 
 class FrankaPushCube():
@@ -332,9 +340,9 @@ class FrankaPushCube():
         self.seed = 0
         self.tau = 0.95
         self.learning_rate = 5e-4
-        self.eval_every = 5
-        self.log_every = 10
-        self.save_every = 200
+        self.eval_every = 10
+        self.log_every = 20
+        self.save_every = 1000
         self.observation_space_size = 24
         self.action_space_size = 2
         self.hidden_size = 4096

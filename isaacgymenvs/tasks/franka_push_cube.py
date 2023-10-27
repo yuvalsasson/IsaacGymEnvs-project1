@@ -166,11 +166,22 @@ class FrankaCubeStack(VecTask):
         # Refresh tensors
         self._refresh()
 
-        self.trajectory_logger = TrajectoryLogger(self.num_envs, self.cfg['offline']['sample_count']) if self.cfg['offline']['save_trajectories'] else None
+        self.trajectory_logger = TrajectoryLogger(self.num_envs,
+                                                  self.cfg['offline']['sample_count'],
+                                                  self.cfg['offline'].get("dataset_name", "robotpush")) if self.cfg['offline']['save_trajectories'] else None
+
         self.offline_actor = isaacgymenvs.tools.utils.load(self.cfg['offline']['network_path'],
                                                            self.cfg["env"]["numObservations"],
                                                            self.cfg["env"]["numActions"],
                                                            self.cfg["offline"]["hidden_size"]).to(self.device) if self.cfg['offline']['test'] else None
+
+        # Stats
+        self.games_played = 0
+        self.goals_reached = 0
+
+    def reset_stats(self):
+        self.games_played = 0
+        self.goals_reached = 0
 
     def create_sim(self):
         self.sim_params.up_axis = gymapi.UP_AXIS_Z
@@ -685,6 +696,9 @@ class FrankaCubeStack(VecTask):
         self.compute_observations()
         ns_obs = self.obs_buf.detach()
         self.compute_reward(self.actions)
+
+        self.games_played += torch.sum(self.reset_buf).item()
+        self.goals_reached += torch.sum(self.reached_goal).item()
 
         if self.trajectory_logger is not None: # trajectory_logger is not None when configuration enables it
             terminals = self.reached_goal # This is true when episodes end due to termination conditions such as reaching goal
