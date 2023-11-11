@@ -46,7 +46,7 @@ class Trajectory(object):
 
 class TrajectoryLogger(object):
     """ Save trajectory information for later usage """
-    def __init__(self, num_env, sample_count, output_path='robotpush'):
+    def __init__(self, num_env, sample_count, output_path='robotpush', trajectory_filter=None):
         super(TrajectoryLogger, self).__init__()
         self.active_trajectories = [Trajectory(i) for i in range(num_env)]
         self.num_envs = num_env
@@ -66,7 +66,9 @@ class TrajectoryLogger(object):
             'target_position': [],
         }
 
-    def add_trajectory_data(self, trajectory : Trajectory):
+        self.trajectory_filter = trajectory_filter
+
+    def _add_trajectory_data(self, trajectory : Trajectory):
         for key in self.data.keys():
             self.data[key].extend(trajectory.data[key])
 
@@ -118,11 +120,13 @@ class TrajectoryLogger(object):
                                                   timeouts_arr[env_id],
                                                   info_per_env_id[env_id])
 
-            if self.active_trajectories[env_id].is_finished():
+            if self.active_trajectories[env_id].is_finished() \
+                and self.trajectory_filter is not None \
+                and self.trajectory_filter(self.active_trajectories[env_id]):
                 # this may be because timeout or termination condition met
                 completed_trajectories.append(self.active_trajectories[env_id])
                 self.active_trajectories[env_id] = Trajectory(env_id)
 
         if completed_trajectories:
             for full_trajectory in completed_trajectories:
-                self.add_trajectory_data(full_trajectory)
+                self._add_trajectory_data(full_trajectory)
