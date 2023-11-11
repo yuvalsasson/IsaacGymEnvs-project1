@@ -29,6 +29,8 @@ env:
 
   controlType: osc  # options are {joint_tor, osc}
 
+  draw_targets: False
+
   asset:
     assetRoot: "../../assets"
     assetFileNameFranka: "urdf/franka_description/robots/franka_panda_gripper.urdf"

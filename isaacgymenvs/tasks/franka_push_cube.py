@@ -719,7 +719,9 @@ class FrankaCubeStack(VecTask):
         target_position_rot = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
 
         # Plot visualizations
-        plotted_envs = self.num_envs if self.viewer and (self.debug_viz or self.cfg['offline'].get('test', False)) else 1
+        plotted_envs = self.num_envs if self.viewer and (self.debug_viz
+                                                         or self.cfg['env'].get('draw_targets', False)
+                                                         or self.cfg['offline'].get('test', False)) else 1
         for i in range(plotted_envs):
             for pos, rot in zip((target_position,), (cubeA_rot,)):
                 px = (pos[i] + quat_apply(target_position_rot, to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
