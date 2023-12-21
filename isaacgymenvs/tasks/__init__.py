@@ -28,6 +28,9 @@
 
 from .franka_push_cube import FrankaCubeStack
 
+# our project imports
+from .robot_push_object import RobotPushObject
+
 
 # Mappings from strings to environments
 isaacgym_task_map = {
