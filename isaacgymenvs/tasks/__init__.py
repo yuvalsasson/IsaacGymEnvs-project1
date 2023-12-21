@@ -26,26 +26,7 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from .ant import Ant
-from .anymal import Anymal
-from .anymal_terrain import AnymalTerrain
-from .ball_balance import BallBalance
-from .cartpole import Cartpole 
-from .factory.factory_task_gears import FactoryTaskGears
-from .factory.factory_task_insertion import FactoryTaskInsertion
-from .factory.factory_task_nut_bolt_pick import FactoryTaskNutBoltPick
-from .factory.factory_task_nut_bolt_place import FactoryTaskNutBoltPlace
-from .factory.factory_task_nut_bolt_screw import FactoryTaskNutBoltScrew
-from .franka_cabinet import FrankaCabinet
-from .franka_cube_stack import FrankaCubeStack
-from .humanoid import Humanoid
-from .humanoid_amp import HumanoidAMP
-from .ingenuity import Ingenuity
-from .quadcopter import Quadcopter
-from .shadow_hand import ShadowHand
-from .allegro_hand import AllegroHand
-from .dextreme.allegro_hand_dextreme import AllegroHandDextremeManualDR, AllegroHandDextremeADR
-from .trifinger import Trifinger
+from .franka_push_cube import FrankaCubeStack
 
 # our project imports
 from .robot_push_object import RobotPushObject
@@ -53,28 +34,5 @@ from .robot_push_object import RobotPushObject
 
 # Mappings from strings to environments
 isaacgym_task_map = {
-    "AllegroHand": AllegroHand,
-    "AllegroHandManualDR": AllegroHandDextremeManualDR,
-    "AllegroHandADR": AllegroHandDextremeADR,
-    "Ant": Ant,
-    "Anymal": Anymal,
-    "AnymalTerrain": AnymalTerrain,
-    "BallBalance": BallBalance,
-    "Cartpole": Cartpole,
-    "FactoryTaskGears": FactoryTaskGears,
-    "FactoryTaskInsertion": FactoryTaskInsertion,
-    "FactoryTaskNutBoltPick": FactoryTaskNutBoltPick,
-    "FactoryTaskNutBoltPlace": FactoryTaskNutBoltPlace,
-    "FactoryTaskNutBoltScrew": FactoryTaskNutBoltScrew,
-    "FrankaCabinet": FrankaCabinet,
-    "FrankaCubeStack": FrankaCubeStack,
-    "Humanoid": Humanoid,
-    "HumanoidAMP": HumanoidAMP,
-    "Ingenuity": Ingenuity,
-    "Quadcopter": Quadcopter,
-    "ShadowHand": ShadowHand,
-    "Trifinger": Trifinger,
-
-    # Our tasks
-    "RobotPushObject": RobotPushObject,
+    "FrankaPushCube": FrankaCubeStack,
 }
